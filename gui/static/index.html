@@ -12,7 +12,7 @@
       <span class="cloud">☁</span>
       <div>
         <h1>CloudMount</h1>
-        <p class="sub">Hosts · Mounts · FUSE / NFS · Keychain</p>
+        <p class="sub">Hosts · Mounts · FUSE / NFS / WinFsp · secrets in Keychain / Credential Manager</p>
       </div>
     </div>
     <div class="header-actions">
@@ -79,14 +79,14 @@
         <pre id="caps-json">…</pre>
         <div class="toolbar">
           <button type="button" id="btn-caps">Re-detect</button>
-          <button type="button" id="btn-macfuse-help" class="secondary">macFUSE install help</button>
-          <button type="button" id="btn-macfuse-brew" class="secondary">brew install macfuse</button>
+          <button type="button" id="btn-macfuse-help" class="secondary">FUSE / WinFsp install help</button>
+          <button type="button" id="btn-macfuse-brew" class="secondary">brew install macfuse (macOS)</button>
         </div>
       </div>
       <div class="card">
         <h2>Enabled modes</h2>
-        <label class="row"><input type="checkbox" id="pref-fuse" /> Enable FUSE mounts</label>
-        <label class="row"><input type="checkbox" id="pref-nfs" /> Enable NFS mounts</label>
+        <label class="row"><input type="checkbox" id="pref-fuse" /> Enable FUSE / WinFsp mounts</label>
+        <label class="row"><input type="checkbox" id="pref-nfs" /> Enable NFS mounts (macOS)</label>
         <label class="row">Default kind
           <select id="pref-default-kind">
             <option value="nfs">NFS</option>
@@ -98,7 +98,7 @@
       <div class="card">
         <h2>Paths</h2>
         <pre id="paths-json">…</pre>
-        <p class="hint">Settings and mounts: Application Support. Secrets: macOS Keychain.</p>
+        <p class="hint">Settings: app data folder. Secrets: macOS Keychain or Windows Credential Manager.</p>
       </div>
     </section>
   </main>

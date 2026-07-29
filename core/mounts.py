@@ -16,7 +16,17 @@ from .hosts import (
     write_rclone_conf,
     write_runtime_conf,
 )
-from .paths import LOG_DIR, RCLONE_CONF, RCLONE_RUNTIME_CONF, expand_user, prefer_tilde, ensure_dirs
+from .paths import (
+    APP_SUPPORT,
+    LOG_DIR,
+    RCLONE_CONF,
+    RCLONE_RUNTIME_CONF,
+    default_mount_kind,
+    expand_user,
+    prefer_tilde,
+    ensure_dirs,
+    is_windows,
+)
 from .rclone_bin import ensure_rclone, rclone_path, run_rclone
 from .state import load, new_id, save
 
@@ -43,12 +53,35 @@ def is_mounted(path: str) -> bool:
     if not path:
         return False
     p = str(expand_user(path))
+    if is_windows():
+        return _win_is_mounted(p)
     try:
         r = subprocess.run(["mount"], capture_output=True, text=True, check=False)
         text = r.stdout or ""
         return f" on {p} " in text or f" on {p}/ " in text
     except Exception:
         return False
+
+
+def _win_is_mounted(path: str) -> bool:
+    """True if path looks like an active WinFsp/rclone mount."""
+    try:
+        if os.path.ismount(path):
+            return True
+    except Exception:
+        pass
+    # Folder mount: rclone process still holding it
+    try:
+        return _pid_for_any_path(path) is not None
+    except Exception:
+        return False
+
+
+def _pid_for_any_path(path: str) -> Optional[int]:
+    """Find any rclone mount PID that references this local path."""
+    return _pid_for("", path, only_cloudmount=True) or _pid_for(
+        "", path, only_cloudmount=False
+    )
 
 
 def upsert_mount(
@@ -58,15 +91,19 @@ def upsert_mount(
     host_id: str,
     remote_path: str,
     path: str,
-    mount_kind: str = "nfs",
+    mount_kind: str = "",
     vfs_cache_mode: str = "full",
 ) -> dict[str, Any]:
     st = load()
     prefs = st.get("prefs") or {}
+    mount_kind = (mount_kind or prefs.get("default_mount_kind") or default_mount_kind()).lower()
     if mount_kind not in ("fuse", "nfs"):
         raise ValueError("mount_kind must be fuse or nfs")
+    if is_windows() and mount_kind == "nfs":
+        # Windows uses WinFsp via rclone mount only
+        mount_kind = "fuse"
     if mount_kind == "fuse" and not prefs.get("enable_fuse", True):
-        raise ValueError("FUSE mounts are disabled in prefs")
+        raise ValueError("FUSE/WinFsp mounts are disabled in prefs")
     if mount_kind == "nfs" and not prefs.get("enable_nfs", True):
         raise ValueError("NFS mounts are disabled in prefs")
     if not get_host(host_id):
@@ -116,7 +153,7 @@ def bulk_add_from_paths(
     host_id: str,
     remote_paths: list[str],
     local_root: str = "~/CloudMount",
-    mount_kind: str = "nfs",
+    mount_kind: str = "",
     vfs_cache_mode: str = "full",
     label_from: str = "basename",
 ) -> dict[str, Any]:
@@ -127,6 +164,8 @@ def bulk_add_from_paths(
     """
     if not get_host(host_id):
         raise ValueError("Host does not exist")
+    if not mount_kind:
+        mount_kind = default_mount_kind()
     created = []
     skipped = []
     st = load()
@@ -174,6 +213,81 @@ def _remote_spec(m: dict[str, Any]) -> str:
     return f"{h['name']}:{rp}"
 
 
+def _list_rclone_processes() -> list[tuple[int, str]]:
+    """Return [(pid, command_line), ...] for rclone processes."""
+    out: list[tuple[int, str]] = []
+    if is_windows():
+        # WMIC is deprecated but still widely available; PowerShell as fallback
+        try:
+            r = subprocess.run(
+                [
+                    "wmic",
+                    "process",
+                    "where",
+                    "name='rclone.exe'",
+                    "get",
+                    "ProcessId,CommandLine",
+                    "/FORMAT:LIST",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            pid = None
+            cmd = ""
+            for line in (r.stdout or "").splitlines():
+                line = line.strip()
+                if line.startswith("CommandLine="):
+                    cmd = line[len("CommandLine=") :]
+                elif line.startswith("ProcessId="):
+                    try:
+                        pid = int(line[len("ProcessId=") :])
+                    except ValueError:
+                        pid = None
+                elif not line and pid is not None:
+                    out.append((pid, cmd))
+                    pid, cmd = None, ""
+            if pid is not None:
+                out.append((pid, cmd))
+            if out:
+                return out
+        except Exception:
+            pass
+        try:
+            ps = (
+                "Get-CimInstance Win32_Process -Filter \"Name='rclone.exe'\" | "
+                "ForEach-Object { $_.ProcessId.ToString() + '|' + $_.CommandLine }"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True,
+                text=True,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            for line in (r.stdout or "").splitlines():
+                if "|" not in line:
+                    continue
+                spid, _, cmd = line.partition("|")
+                try:
+                    out.append((int(spid.strip()), cmd.strip()))
+                except ValueError:
+                    continue
+        except Exception:
+            pass
+        return out
+
+    r = subprocess.run(["pgrep", "-fl", "rclone"], capture_output=True, text=True)
+    for line in (r.stdout or "").splitlines():
+        try:
+            pid = int(line.split()[0])
+        except ValueError:
+            continue
+        out.append((pid, line))
+    return out
+
+
 def _pid_for(remote: str, path: str, *, only_cloudmount: bool = True) -> Optional[int]:
     """Find rclone mount PID for this remote+path.
 
@@ -182,25 +296,30 @@ def _pid_for(remote: str, path: str, *, only_cloudmount: bool = True) -> Optiona
     unrelated rclone mount on the same path.
     """
     p = str(expand_user(path))
-    conf_markers = (str(RCLONE_CONF), str(RCLONE_RUNTIME_CONF), "CloudMount")
-    r = subprocess.run(["pgrep", "-fl", "rclone"], capture_output=True, text=True)
-    for line in (r.stdout or "").splitlines():
-        if remote not in line or p not in line:
+    # Normalize Windows path separators for cmdline match
+    p_variants = {p, p.replace("\\", "/"), p.replace("/", "\\")}
+    conf_markers = (
+        str(RCLONE_CONF),
+        str(RCLONE_RUNTIME_CONF),
+        "CloudMount",
+        str(APP_SUPPORT),
+    )
+    for pid, line in _list_rclone_processes():
+        # empty remote = path-only match (used by Windows is_mounted helper)
+        if remote and remote not in line:
             continue
-        if " mount " not in f" {line} " and " nfsmount " not in line:
+        if not any(v and v in line for v in p_variants):
+            continue
+        low = line.lower()
+        if "mount" not in low and "nfsmount" not in low:
             continue
         if only_cloudmount:
             if not any(m in line for m in conf_markers) and "--config" not in line:
-                # Old scripts often omit --config; leave them alone
                 continue
             if not any(m in line for m in conf_markers):
-                # Has --config but not ours
-                if "Application Support/YourAmaryllis/CloudMount" not in line:
+                if "YourAmaryllis" not in line and "CloudMount" not in line:
                     continue
-        try:
-            return int(line.split()[0])
-        except ValueError:
-            continue
+        return pid
     return None
 
 
@@ -210,16 +329,19 @@ def mount(mount_id: str) -> dict[str, Any]:
     if not m:
         return {"ok": False, "error": "Mount not found"}
     path = expand_user(m["path"])
-    kind = (m.get("mount_kind") or "nfs").lower()
+    kind = (m.get("mount_kind") or default_mount_kind()).lower()
+    if is_windows() and kind == "nfs":
+        kind = "fuse"
     if is_mounted(str(path)):
         return {"ok": True, "already": True, "path": str(path), "kind": kind}
 
     if kind == "fuse":
         if not capabilities.fuse_ready():
             help_ = capabilities.help_install_macfuse(open_browser=False)
+            need = "WinFsp" if is_windows() else "macFUSE"
             return {
                 "ok": False,
-                "error": "FUSE not ready (need macFUSE + cmount rclone)",
+                "error": f"Mount not ready (need {need} + rclone with mount)",
                 "help": help_,
             }
         cmd_name = "mount"
@@ -268,15 +390,22 @@ def mount(mount_id: str) -> dict[str, Any]:
     logf = open(log, "a", buffering=1)
     logf.write(f"\n--- starting {cmd_name} {remote} -> {path}\n")
     logf.write(f"config={runtime_conf}\n")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=logf,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        env=full_env,
-        start_new_session=True,
-        close_fds=True,
-    )
+    popen_kw: dict[str, Any] = {
+        "stdout": logf,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+        "env": full_env,
+    }
+    if is_windows():
+        # Hide console window; new process group for clean kill
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        popen_kw["creationflags"] = flags
+        popen_kw["close_fds"] = False
+    else:
+        popen_kw["start_new_session"] = True
+        popen_kw["close_fds"] = True
+    proc = subprocess.Popen(cmd, **popen_kw)
 
     def _ok_payload() -> dict[str, Any]:
         # rclone may have written client_* session tokens into the conf
@@ -348,10 +477,7 @@ def unmount(mount_id: str) -> dict[str, Any]:
 
     if not is_mounted(str(path)):
         if our_pid:
-            try:
-                os.kill(our_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            _kill_pid(our_pid)
             return {"ok": True, "message": "killed leftover CloudMount process"}
         return {"ok": True, "already": True}
 
@@ -363,32 +489,46 @@ def unmount(mount_id: str) -> dict[str, Any]:
             "error": (
                 f"{path} is mounted but not by CloudMount "
                 f"(pid={foreign}). Leaving it alone — stop the other rclone "
-                f"(e.g. ~/rclone-mount) yourself if you intend to replace it."
+                f"yourself if you intend to replace it."
             ),
             "foreign": True,
             "path": str(path),
         }
 
-    for args in (
-        ["umount", str(path)],
-        ["diskutil", "unmount", str(path)],
-        ["umount", "-f", str(path)],
-    ):
-        subprocess.run(args, capture_output=True)
-        if not is_mounted(str(path)):
-            return {"ok": True, "path": str(path)}
+    if not is_windows():
+        for args in (
+            ["umount", str(path)],
+            ["diskutil", "unmount", str(path)],
+            ["umount", "-f", str(path)],
+        ):
+            subprocess.run(args, capture_output=True)
+            if not is_mounted(str(path)):
+                return {"ok": True, "path": str(path)}
 
-    try:
-        os.kill(our_pid, signal.SIGTERM)
-        time.sleep(0.5)
-        os.kill(our_pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    subprocess.run(["umount", "-f", str(path)], capture_output=True)
+    _kill_pid(our_pid)
+    time.sleep(0.5)
+    if not is_windows():
+        subprocess.run(["umount", "-f", str(path)], capture_output=True)
 
     if is_mounted(str(path)):
         return {"ok": False, "error": f"Failed to unmount {path}"}
     return {"ok": True, "path": str(path)}
+
+
+def _kill_pid(pid: int) -> None:
+    if is_windows():
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+        time.sleep(0.5)
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def mount_all() -> list[dict[str, Any]]:

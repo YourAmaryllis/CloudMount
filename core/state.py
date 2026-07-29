@@ -3,29 +3,28 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .paths import STATE_PATH, ensure_dirs
+from .paths import STATE_PATH, default_mount_kind, ensure_dirs, is_windows
 
 _lock = threading.Lock()
 
-DEFAULT_STATE: dict[str, Any] = {
-    "version": 1,
-    "prefs": {
-        "enable_fuse": True,
-        "enable_nfs": True,
-        "default_mount_kind": "nfs",  # user prefers NFS
-        "auto_migrate_done": False,
-    },
-    "hosts": [],
-    "mounts": [],
-}
-
 
 def _default() -> dict[str, Any]:
-    return deepcopy(DEFAULT_STATE)
+    kind = default_mount_kind()
+    return {
+        "version": 1,
+        "prefs": {
+            "enable_fuse": True,
+            # NFS helper is macOS/Linux-oriented; off by default on Windows
+            "enable_nfs": not is_windows(),
+            "default_mount_kind": kind,
+            "auto_migrate_done": False,
+        },
+        "hosts": [],
+        "mounts": [],
+    }
 
 
 def load() -> dict[str, Any]:

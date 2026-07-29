@@ -100,9 +100,19 @@ def main(argv: list[str] | None = None) -> int:
     s2.add_argument("--port", type=int, default=8765)
     s2.add_argument("--no-open", action="store_true")
 
-    sub.add_parser("install-menubar", help="Install SwiftBar plugin")
-    mf = sub.add_parser("install-macfuse-help")
-    mf.add_argument("--brew", action="store_true", help="Try brew install --cask macfuse")
+    tr = sub.add_parser(
+        "tray",
+        help="System tray / notification-area host (Windows; also works on Linux/macOS with pystray)",
+    )
+    tr.add_argument("--port", type=int, default=8765)
+
+    sub.add_parser("install-menubar", help="Install SwiftBar plugin (macOS)")
+    sub.add_parser(
+        "install-tray",
+        help="Install Windows Startup shortcut for the system tray icon",
+    )
+    mf = sub.add_parser("install-macfuse-help", help="Install help for macFUSE / WinFsp")
+    mf.add_argument("--brew", action="store_true", help="Try brew install --cask macfuse (macOS)")
 
     sub.add_parser("backends", help="List rclone backend types")
     bs = sub.add_parser("backend-schema", help="Config fields for a backend type")
@@ -208,10 +218,20 @@ def main(argv: list[str] | None = None) -> int:
 
         run_server(port=port, open_browser=not no_open and args.cmd == "gui")
         return 0
+    if args.cmd == "tray":
+        from gui.tray import run_tray
+
+        run_tray(port=getattr(args, "port", 8765) or 8765)
+        return 0
     if args.cmd == "install-menubar":
         from scripts.install_menubar import install
 
         _j(install())
+        return 0
+    if args.cmd == "install-tray":
+        from scripts.install_tray import install as install_tray
+
+        _j(install_tray())
         return 0
     if args.cmd == "install-macfuse-help":
         if args.brew:

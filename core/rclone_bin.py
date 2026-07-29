@@ -67,10 +67,19 @@ def bundled_rclone_path() -> Optional[Path]:
     return None
 
 
+def _is_runnable(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    # Windows: os.access X_OK is unreliable for .exe
+    if platform.system() == "Windows":
+        return True
+    return os.access(path, os.X_OK)
+
+
 def rclone_path() -> Path:
     """Path used to run rclone: prefer App Support install, else bundled."""
     installed = installed_rclone_path()
-    if installed.is_file() and os.access(installed, os.X_OK):
+    if _is_runnable(installed):
         return installed
     bundled = bundled_rclone_path()
     if bundled is not None:
@@ -88,7 +97,7 @@ def ensure_rclone(force: bool = False, version: str = "current") -> Path:
     """
     ensure_dirs()
     dest = installed_rclone_path()
-    if dest.is_file() and os.access(dest, os.X_OK) and not force:
+    if _is_runnable(dest) and not force:
         return dest
 
     # Seed from bundled copy without re-downloading when possible
@@ -96,7 +105,10 @@ def ensure_rclone(force: bool = False, version: str = "current") -> Path:
     if bundled is not None and bundled.is_file() and not force:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(bundled, dest)
-        dest.chmod(0o755)
+        try:
+            dest.chmod(0o755)
+        except OSError:
+            pass
         return dest
 
     pkg_os, arch = _pkg_os_arch()
@@ -144,14 +156,16 @@ def run_rclone(
     full_env = os.environ.copy()
     if env:
         full_env.update(env)
-    return subprocess.run(
-        cmd,
-        capture_output=capture,
-        text=True,
-        check=check,
-        env=full_env,
-        timeout=timeout,
-    )
+    kw: dict = {
+        "capture_output": capture,
+        "text": True,
+        "check": check,
+        "env": full_env,
+        "timeout": timeout,
+    }
+    if platform.system() == "Windows":
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.run(cmd, **kw)
 
 
 def rclone_version() -> str:

@@ -1,0 +1,3 @@
+# Windows system-tray UI (notification area — SwiftBar equivalent)
+pystray>=0.19.5
+Pillow>=10.0.0

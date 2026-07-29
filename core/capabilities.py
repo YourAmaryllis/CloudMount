@@ -33,19 +33,51 @@ def macfuse_installed() -> bool:
     return False
 
 
+def winfsp_installed() -> bool:
+    """WinFsp is required for rclone mount on Windows."""
+    if platform.system() != "Windows":
+        return False
+    candidates = [
+        Path(r"C:\Program Files (x86)\WinFsp\bin\winfsp-x64.dll"),
+        Path(r"C:\Program Files\WinFsp\bin\winfsp-x64.dll"),
+        Path(r"C:\Program Files (x86)\WinFsp\bin\winfsp-x86.dll"),
+        Path(r"C:\Program Files\WinFsp\bin\winfsp-x86.dll"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return True
+    # Registry / service name
+    try:
+        r = subprocess.run(
+            ["sc", "query", "WinFsp.Launcher"],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if r.returncode == 0 and "RUNNING" in (r.stdout or "").upper():
+            return True
+        if r.returncode == 0:
+            return True  # service exists even if stopped
+    except Exception:
+        pass
+    return False
+
+
 def rclone_has_fuse_mount() -> bool:
     try:
         ensure_rclone()
     except Exception:
         return False
     r = run_rclone(["version"])
-    if "cmount" in (r.stdout or ""):
+    text = (r.stdout or "") + (r.stderr or "")
+    if "cmount" in text:
         return True
     h = run_rclone(["mount", "-h"])
     text = (h.stdout or "") + (h.stderr or "")
     if "unknown command" in text.lower() and "mount" in text.lower():
         return False
-    return "Rclone mount allows" in text or "mount any of Rclone" in text
+    return "Rclone mount allows" in text or "mount any of Rclone" in text or "Usage:" in text
 
 
 def rclone_has_nfsmount() -> bool:
@@ -61,10 +93,22 @@ def rclone_has_nfsmount() -> bool:
 
 
 def fuse_ready() -> bool:
-    return rclone_has_fuse_mount() and macfuse_installed()
+    """FUSE-style local mount ready (macFUSE on macOS, WinFsp on Windows)."""
+    if not rclone_has_fuse_mount():
+        return False
+    system = platform.system()
+    if system == "Darwin":
+        return macfuse_installed()
+    if system == "Windows":
+        return winfsp_installed()
+    # Linux: typically FUSE userspace
+    return True
 
 
 def nfs_ready() -> bool:
+    # NFS mount helper is primarily a macOS/Linux story; rare on Windows
+    if platform.system() == "Windows":
+        return False
     return rclone_has_nfsmount()
 
 
@@ -77,21 +121,41 @@ def report() -> dict[str, Any]:
             present = rclone_path().is_file()
     except Exception:
         pass
+    system = platform.system()
     return {
         "rclone_path": str(rclone_path()),
         "rclone_present": present,
+        "platform_system": system,
         "macfuse_installed": macfuse_installed(),
+        "winfsp_installed": winfsp_installed(),
         "rclone_has_fuse_mount": rclone_has_fuse_mount() if present else False,
         "rclone_has_nfsmount": rclone_has_nfsmount() if present else False,
         "fuse_ready": fuse_ready() if present else False,
         "nfs_ready": nfs_ready() if present else False,
         "platform": platform.platform(),
+        "default_mount_kind": "fuse" if system == "Windows" else "nfs",
+        "mount_backend_label": (
+            "WinFsp" if system == "Windows" else ("macFUSE" if system == "Darwin" else "FUSE")
+        ),
     }
 
 
 def help_install_macfuse(open_browser: bool = True) -> dict[str, Any]:
+    """Install help for FUSE-class drivers (macFUSE or WinFsp)."""
     import shutil
     import webbrowser
+
+    if platform.system() == "Windows":
+        url = "https://winfsp.dev/rel/"
+        steps = [
+            "Install WinFsp (required for rclone mount on Windows).",
+            f"Download from {url}",
+            "Run the installer, then re-check capabilities in CloudMount Setup.",
+            "Optional: reboot if the WinFsp service does not start.",
+        ]
+        if open_browser:
+            webbrowser.open(url)
+        return {"ok": True, "brew_command": None, "url": url, "steps": steps}
 
     brew = shutil.which("brew")
     steps = [
@@ -118,6 +182,12 @@ def help_install_macfuse(open_browser: bool = True) -> dict[str, Any]:
 def try_brew_install_macfuse() -> dict[str, Any]:
     import shutil
 
+    if platform.system() == "Windows":
+        return {
+            "ok": False,
+            "error": "Use the WinFsp installer from https://winfsp.dev/rel/",
+            **help_install_macfuse(False),
+        }
     brew = shutil.which("brew")
     if not brew:
         return {"ok": False, "error": "Homebrew not found", **help_install_macfuse(False)}
