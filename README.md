@@ -10,7 +10,7 @@ Any rclone backend can be configured in the UI. **Tested so far: Wasabi (S3) and
 
 - **macOS:** FUSE (`rclone mount` + macFUSE) and **NFS** (`rclone nfsmount`)  
 - **Windows:** `rclone mount` + **WinFsp**, plus a **system tray** icon (notification area)  
-- Hosts and mounts in a local web UI (`http://127.0.0.1:8765/`)  
+- Hosts and mounts in a local web UI (`http://127.0.0.2:8765/`)  
 - Secrets in **Keychain** (macOS) or **Credential Manager** (Windows)  
 - Official rclone binary downloaded on first setup  
 - macOS DMG (unsigned); Windows: run from source / tray script (see [docs/WINDOWS.md](docs/WINDOWS.md))
