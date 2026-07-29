@@ -1,0 +1,11 @@
+# LEGACY — the menu bar UI now reads/writes config/mounts.json.
+# This file is only used once to migrate if mounts.json is missing.
+# Prefer: menu bar → Add mount… / Configure…
+# Or:     bin/wasabi-config
+
+mounts:
+  - id: nas
+    label: NAS
+    remote: wasabi:nas-tsang2
+    path: ~/nas
+    vfs_cache_mode: full

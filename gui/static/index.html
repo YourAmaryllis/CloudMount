@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CloudMount</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="cloud">☁</span>
+      <div>
+        <h1>CloudMount</h1>
+        <p class="sub">Hosts · Mounts · FUSE / NFS · Keychain</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="summary" class="pill">…</span>
+      <button type="button" id="btn-refresh">Refresh</button>
+      <button type="button" id="btn-setup" class="secondary">Run setup</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button type="button" data-tab="mounts" class="active">Mounts</button>
+    <button type="button" data-tab="hosts">Hosts</button>
+    <button type="button" data-tab="setup">Setup</button>
+  </nav>
+
+  <main>
+    <section id="tab-mounts" class="tab active">
+      <div class="toolbar">
+        <button type="button" id="btn-mount-all">Mount all</button>
+        <button type="button" id="btn-unmount-all" class="secondary">Unmount all</button>
+        <button type="button" id="btn-add-mount" class="primary">Add mount…</button>
+        <button type="button" id="btn-browse-add" class="primary">Browse remote &amp; add folders…</button>
+      </div>
+      <p class="hint">Remote path can be a whole bucket or a subfolder (<code>bucket/subfolder</code>). Use browse to pick several folders at once.</p>
+      <div id="mounts-empty" class="empty hidden">No mounts yet. Add a host first, then add a mount.</div>
+      <table id="mounts-table" class="hidden">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Host</th>
+            <th>Remote</th>
+            <th>Local</th>
+            <th>Kind</th>
+            <th>State</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-hosts" class="tab">
+      <div class="toolbar">
+        <button type="button" id="btn-add-host" class="primary">Add host…</button>
+      </div>
+      <div id="hosts-empty" class="empty hidden">No hosts. Add a Wasabi/S3 (or other) host — secrets go to Keychain.</div>
+      <table id="hosts-table" class="hidden">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Endpoint</th>
+            <th>Secrets</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-setup" class="tab">
+      <div class="card">
+        <h2>Capabilities</h2>
+        <pre id="caps-json">…</pre>
+        <div class="toolbar">
+          <button type="button" id="btn-caps">Re-detect</button>
+          <button type="button" id="btn-macfuse-help" class="secondary">macFUSE install help</button>
+          <button type="button" id="btn-macfuse-brew" class="secondary">brew install macfuse</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Enabled modes</h2>
+        <label class="row"><input type="checkbox" id="pref-fuse" /> Enable FUSE mounts</label>
+        <label class="row"><input type="checkbox" id="pref-nfs" /> Enable NFS mounts</label>
+        <label class="row">Default kind
+          <select id="pref-default-kind">
+            <option value="nfs">NFS</option>
+            <option value="fuse">FUSE</option>
+          </select>
+        </label>
+        <button type="button" id="btn-save-prefs" class="primary">Save prefs</button>
+      </div>
+      <div class="card">
+        <h2>Paths</h2>
+        <pre id="paths-json">…</pre>
+        <p class="hint">Settings and mounts: Application Support. Secrets: macOS Keychain.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Dialogs must NOT live inside .tab { display:none } or showModal() is invisible -->
+  <dialog id="dlg-mount">
+    <form method="dialog" id="form-mount">
+      <h2 id="dlg-mount-title">Add mount</h2>
+      <input type="hidden" name="id" />
+      <label>Label <input name="label" required placeholder="My mount" /></label>
+      <label>Host
+        <select name="host_id" required></select>
+      </label>
+      <label>Remote path (bucket or bucket/folder)
+        <input name="remote_path" required placeholder="bucket/subfolder" />
+        <button type="button" id="btn-lsd" class="linkish">Browse one level…</button>
+      </label>
+      <label>Local path <input name="path" required placeholder="~/CloudMount/my-folder" /></label>
+      <label>Mount kind
+        <select name="mount_kind">
+          <option value="nfs">NFS (share / volume style)</option>
+          <option value="fuse">FUSE (path under home)</option>
+        </select>
+      </label>
+      <label>VFS cache
+        <select name="vfs_cache_mode">
+          <option value="full">full</option>
+          <option value="writes">writes</option>
+          <option value="minimal">minimal</option>
+          <option value="off">off</option>
+        </select>
+      </label>
+      <div id="mount-form-error" class="error"></div>
+      <menu>
+        <button type="submit" value="cancel" class="secondary">Cancel</button>
+        <button type="submit" value="save" class="primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-browse">
+    <form method="dialog" id="form-browse">
+      <h2>Browse remote — add folder mounts</h2>
+      <label>Host
+        <select name="host_id" id="browse-host" required></select>
+      </label>
+      <div class="browse-bar">
+        <button type="button" id="browse-up" class="secondary">↑ Up</button>
+        <code id="browse-prefix" class="browse-path">/</code>
+      </div>
+      <div id="browse-list" class="browse-list"></div>
+      <label>Local parent for new mounts
+        <input name="local_root" id="browse-local-root" value="~/CloudMount" />
+      </label>
+      <label>Mount kind
+        <select name="mount_kind" id="browse-kind">
+          <option value="nfs">NFS</option>
+          <option value="fuse">FUSE</option>
+        </select>
+      </label>
+      <label class="row">
+        <input type="checkbox" id="browse-full-path" />
+        Keep path in label/local (e.g. ~/CloudMount/bucket/subfolder)
+      </label>
+      <p class="hint">Click a folder name to open it. Check boxes for folders to mount, then “Add selected as mounts”.</p>
+      <div id="browse-error" class="error"></div>
+      <menu>
+        <button type="button" id="browse-cancel" class="secondary">Close</button>
+        <button type="button" id="browse-add" class="primary">Add selected as mounts</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-host">
+    <form method="dialog" id="form-host">
+      <h2 id="dlg-host-title">Add host</h2>
+      <input type="hidden" name="id" />
+      <label>Name (rclone remote id)
+        <input name="name" required placeholder="wasabi" pattern="[A-Za-z0-9_-]+" />
+      </label>
+      <label>Type
+        <select name="type">
+          <option value="s3">S3 / Wasabi</option>
+        </select>
+      </label>
+      <label>Provider <input name="provider" value="Wasabi" /></label>
+      <label>Endpoint <input name="endpoint" value="https://s3.us-east-1.wasabisys.com" /></label>
+      <label>Region <input name="region" value="us-east-1" /></label>
+      <label>Access key <input name="access_key" autocomplete="off" /></label>
+      <label>Secret key <input name="secret_key" type="password" autocomplete="off" /></label>
+      <p class="hint">Keys are stored in macOS Keychain. Leave blank when editing to keep existing.</p>
+      <div id="host-form-error" class="error"></div>
+      <menu>
+        <button type="submit" value="cancel" class="secondary">Cancel</button>
+        <button type="submit" value="save" class="primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <div id="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

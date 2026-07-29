@@ -1,0 +1,19 @@
+# Downloaded rclone binaries (fetched by ensure-rclone)
+vendor/rclone/**
+!vendor/rclone/.gitkeep
+
+# Runtime logs
+logs/*
+!logs/.gitkeep
+
+# Build artifacts
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local overrides
+config/mounts.local.yaml
+.env
+.env.*
+

@@ -1,0 +1,452 @@
+#!/usr/bin/env bash
+# Configure mounts from the menu bar / CLI (macOS dialogs).
+#
+#   wasabi-config              → interactive Configure menu
+#   wasabi-config add          → add mount wizard
+#   wasabi-config edit         → edit an existing mount
+#   wasabi-config remove       → remove a mount
+#   wasabi-config add-bucket   → pick a Wasabi bucket, then local path
+#   wasabi-config list         → print mounts
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+
+json_write_mounts() {
+  # stdin: full JSON document
+  ensure_config_json
+  local tmp
+  tmp="$(mktemp)"
+  cat >"$tmp"
+  python3 - "$tmp" "$WASABI_CONFIG_JSON" <<'PY'
+import json, sys
+from pathlib import Path
+raw = Path(sys.argv[1]).read_text()
+data = json.loads(raw)
+if "mounts" not in data or not isinstance(data["mounts"], list):
+    raise SystemExit("invalid mounts document")
+# normalize
+seen = set()
+out = []
+for m in data["mounts"]:
+    mid = str(m.get("id", "")).strip()
+    if not mid or mid in seen:
+        continue
+    seen.add(mid)
+    out.append({
+        "id": mid,
+        "label": str(m.get("label") or mid).strip(),
+        "remote": str(m.get("remote") or "").strip(),
+        "path": str(m.get("path") or "").strip(),
+        "vfs_cache_mode": str(m.get("vfs_cache_mode") or "full").strip() or "full",
+    })
+Path(sys.argv[2]).write_text(json.dumps({"mounts": out}, indent=2) + "\n")
+PY
+  rm -f "$tmp"
+}
+
+load_mounts_json() {
+  ensure_config_json
+  cat "$WASABI_CONFIG_JSON"
+}
+
+slugify() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g' | cut -c1-40
+}
+
+add_mount_record() {
+  local id="$1" label="$2" remote="$3" path="$4" mode="${5:-full}"
+  # Store tidy ~/ paths when under $HOME (bash may have expanded ~ already).
+  path="$(prefer_tilde_path "$path")"
+  ensure_config_json
+  python3 - "$WASABI_CONFIG_JSON" "$id" "$label" "$remote" "$path" "$mode" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = json.loads(path.read_text() or '{"mounts":[]}')
+mounts = data.get("mounts") or []
+mid, label, remote, mpath, mode = sys.argv[2:7]
+# replace if same id
+mounts = [m for m in mounts if m.get("id") != mid]
+mounts.append({
+    "id": mid,
+    "label": label,
+    "remote": remote,
+    "path": mpath,
+    "vfs_cache_mode": mode or "full",
+})
+# stable sort by id
+mounts.sort(key=lambda m: m.get("id") or "")
+path.write_text(json.dumps({"mounts": mounts}, indent=2) + "\n")
+print(f"Saved mount {mid}: {remote} → {mpath}")
+PY
+}
+
+remove_mount_record() {
+  local id="$1"
+  ensure_config_json
+  python3 - "$WASABI_CONFIG_JSON" "$id" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+mid = sys.argv[2]
+data = json.loads(path.read_text() or '{"mounts":[]}')
+before = len(data.get("mounts") or [])
+data["mounts"] = [m for m in (data.get("mounts") or []) if m.get("id") != mid]
+path.write_text(json.dumps(data, indent=2) + "\n")
+print(f"Removed {mid}" if len(data["mounts"]) < before else f"No mount id {mid}")
+PY
+}
+
+ensure_rclone_ready() {
+  "$ROOT/bin/ensure-rclone" >/dev/null
+  load_wasabi_env
+}
+
+list_rclone_remotes() {
+  ensure_rclone_ready
+  local bin
+  bin="$(rclone_bin)"
+  "$bin" listremotes 2>/dev/null | sed 's/:$//' | grep -v '^$' || true
+}
+
+list_remote_buckets() {
+  # top-level dirs on a remote (e.g. wasabi:)
+  local remote="${1:-$DEFAULT_RCLONE_REMOTE}"
+  ensure_rclone_ready
+  local bin
+  bin="$(rclone_bin)"
+  # lsd prints:          -1 2024-01-01 00:00:00        -1 name
+  "$bin" lsd "${remote}:" 2>/dev/null | awk '{print $NF}' | grep -v '^$' || true
+}
+
+cmd_list() {
+  printf '%-12s %-20s %-28s %s\n' "ID" "LABEL" "REMOTE" "PATH"
+  while IFS=$'\t' read -r id label remote path mode; do
+    printf '%-12s %-20s %-28s %s\n' "$id" "$label" "$remote" "$path"
+  done < <(list_mounts_tsv)
+}
+
+wizard_add() {
+  if [[ "$(os_name)" != "darwin" ]]; then
+    echo "Interactive add currently requires macOS dialogs. Use:" >&2
+    echo "  wasabi-config add-cli <id> <label> <remote> <path>" >&2
+    exit 1
+  fi
+
+  local remotes=()
+  while IFS= read -r r; do
+    [[ -n "$r" ]] && remotes+=("$r")
+  done < <(list_rclone_remotes)
+
+  if [[ "${#remotes[@]}" -eq 0 ]]; then
+    ui_alert "No rclone remotes found. Configure one in ~/.config/rclone/rclone.conf first (e.g. [wasabi])."
+    exit 1
+  fi
+
+  local remote_name bucket remote path label id mode
+  remote_name="$(ui_choose "Which rclone remote?" "${remotes[@]}")"
+  [[ -z "$remote_name" ]] && exit 0
+
+  local buckets=()
+  while IFS= read -r b; do
+    [[ -n "$b" ]] && buckets+=("$b")
+  done < <(list_remote_buckets "$remote_name")
+
+  if [[ "${#buckets[@]}" -gt 0 ]]; then
+    local choice
+    choice="$(ui_choose "Bucket / top-level folder on ${remote_name}: (or Cancel to type path)" "${buckets[@]}" "▸ Type custom path…")"
+    [[ -z "$choice" ]] && exit 0
+    if [[ "$choice" == "▸ Type custom path…" ]]; then
+      bucket="$(ui_text "Remote path after ${remote_name}: (e.g. my-bucket or my-bucket/subdir)" "" "Remote path")"
+      [[ -z "$bucket" ]] && exit 0
+    else
+      bucket="$choice"
+    fi
+  else
+    bucket="$(ui_text "Remote path after ${remote_name}: (e.g. my-bucket)" "" "Remote path")"
+    [[ -z "$bucket" ]] && exit 0
+  fi
+  # strip leading slashes
+  bucket="${bucket#/}"
+  remote="${remote_name}:${bucket}"
+
+  # Local mount point
+  local folder_choice
+  folder_choice="$(ui_choose "Local mount point for ${remote}?" \
+    "Create ~/wasabi/${bucket##*/}" \
+    "Create ~/$(slugify "${bucket##*/}")" \
+    "Choose folder in Finder…")"
+  [[ -z "$folder_choice" ]] && exit 0
+
+  case "$folder_choice" in
+    "Choose folder in Finder…")
+      path="$(ui_choose_folder "Choose (or create) the local folder to mount into")"
+      [[ -z "$path" ]] && exit 0
+      # strip trailing slash from POSIX path
+      path="${path%/}"
+      path="$(prefer_tilde_path "$path")"
+      ;;
+    "Create ~/wasabi/"*)
+      path="~/wasabi/${bucket##*/}"
+      ;;
+    *)
+      path="~/$(slugify "${bucket##*/}")"
+      ;;
+  esac
+
+  label="$(ui_text "Display name in the menu bar" "${bucket##*/}" "Label")"
+  [[ -z "$label" ]] && exit 0
+
+  id="$(ui_text "Short id (letters, numbers, dashes)" "$(slugify "$label")" "Id")"
+  [[ -z "$id" ]] && exit 0
+  id="$(slugify "$id")"
+  if [[ -z "$id" ]]; then
+    ui_alert "Id cannot be empty."
+    exit 1
+  fi
+
+  if get_mount_by_id "$id" >/dev/null 2>&1; then
+    local overwrite
+    overwrite="$(ui_confirm "Mount id “$id” already exists. Replace it?")"
+    [[ "$overwrite" != "yes" ]] && exit 0
+  fi
+
+  mode="$(ui_choose "VFS cache mode (full is recommended for Wasabi)" "full" "writes" "minimal" "off")"
+  [[ -z "$mode" ]] && mode="full"
+
+  add_mount_record "$id" "$label" "$remote" "$path" "$mode"
+  ui_notify "Added $label ($remote → $path)"
+  ui_alert "Added mount “$label”
+
+$remote
+→ $path
+
+Use Mount from the menu bar to connect it."
+}
+
+wizard_edit() {
+  if [[ "$(os_name)" != "darwin" ]]; then
+    echo "Interactive edit requires macOS." >&2
+    exit 1
+  fi
+
+  local ids=() labels=()
+  while IFS=$'\t' read -r id label remote path mode; do
+    ids+=("$id")
+    labels+=("$label  [$id]  $remote → $path")
+  done < <(list_mounts_tsv)
+
+  if [[ "${#ids[@]}" -eq 0 ]]; then
+    ui_alert "No mounts configured yet. Use Add mount first."
+    exit 0
+  fi
+
+  local pick
+  pick="$(ui_choose "Which mount to edit?" "${labels[@]}")"
+  [[ -z "$pick" ]] && exit 0
+
+  local idx=0 sel_id=""
+  for i in "${!labels[@]}"; do
+    if [[ "${labels[$i]}" == "$pick" ]]; then
+      sel_id="${ids[$i]}"
+      break
+    fi
+  done
+  [[ -z "$sel_id" ]] && exit 1
+
+  local row
+  row="$(get_mount_by_id "$sel_id")"
+  IFS=$'\t' read -r id label remote path mode <<<"$row"
+
+  local field
+  field="$(ui_choose "Edit field for “$label”" \
+    "Label (now: $label)" \
+    "Remote (now: $remote)" \
+    "Local path (now: $path)" \
+    "VFS cache mode (now: $mode)" \
+    "▸ Re-run full wizard (replace)")"
+  [[ -z "$field" ]] && exit 0
+
+  case "$field" in
+    "Label"*)
+      label="$(ui_text "Display name" "$label" "Label")"
+      [[ -z "$label" ]] && exit 0
+      ;;
+    "Remote"*)
+      remote="$(ui_text "rclone remote:path" "$remote" "Remote")"
+      [[ -z "$remote" ]] && exit 0
+      ;;
+    "Local path"*)
+      local how
+      how="$(ui_choose "Set local path" "Type path…" "Choose folder in Finder…")"
+      [[ -z "$how" ]] && exit 0
+      if [[ "$how" == "Choose folder in Finder…" ]]; then
+        path="$(ui_choose_folder "Local mount folder")"
+        [[ -z "$path" ]] && exit 0
+        path="$(prefer_tilde_path "${path%/}")"
+      else
+        path="$(ui_text "Local path (~/… allowed)" "$path" "Path")"
+        [[ -z "$path" ]] && exit 0
+      fi
+      ;;
+    "VFS"*)
+      mode="$(ui_choose "VFS cache mode" "full" "writes" "minimal" "off")"
+      [[ -z "$mode" ]] && exit 0
+      ;;
+    "▸ Re-run"*)
+      # remove then add
+      if is_mounted "$path"; then
+        "$ROOT/bin/wasabi-unmount" "$id" || true
+      fi
+      remove_mount_record "$id"
+      wizard_add
+      return 0
+      ;;
+  esac
+
+  add_mount_record "$id" "$label" "$remote" "$path" "$mode"
+  ui_notify "Updated $label"
+  ui_alert "Updated “$label”
+
+$remote
+→ $path
+mode: $mode"
+}
+
+wizard_remove() {
+  if [[ "$(os_name)" != "darwin" ]]; then
+    echo "Usage: wasabi-config remove-cli <id>" >&2
+    exit 1
+  fi
+
+  local ids=() labels=()
+  while IFS=$'\t' read -r id label remote path mode; do
+    ids+=("$id")
+    labels+=("$label  [$id]")
+  done < <(list_mounts_tsv)
+
+  if [[ "${#ids[@]}" -eq 0 ]]; then
+    ui_alert "No mounts to remove."
+    exit 0
+  fi
+
+  local pick
+  pick="$(ui_choose "Remove which mount?" "${labels[@]}")"
+  [[ -z "$pick" ]] && exit 0
+
+  local sel_id=""
+  for i in "${!labels[@]}"; do
+    if [[ "${labels[$i]}" == "$pick" ]]; then
+      sel_id="${ids[$i]}"
+      break
+    fi
+  done
+  [[ -z "$sel_id" ]] && exit 1
+
+  local row path
+  row="$(get_mount_by_id "$sel_id")"
+  IFS=$'\t' read -r id label remote path mode <<<"$row"
+
+  local ok
+  ok="$(ui_confirm "Remove “$label” ($remote)?\n\nThis only removes the menu entry; data on Wasabi is not deleted.")"
+  [[ "$ok" != "yes" ]] && exit 0
+
+  if is_mounted "$path"; then
+    "$ROOT/bin/wasabi-unmount" "$id" || true
+  fi
+  remove_mount_record "$id"
+  ui_notify "Removed $label"
+}
+
+wizard_menu() {
+  if [[ "$(os_name)" != "darwin" ]]; then
+    cmd_list
+    echo
+    echo "Commands: add | edit | remove | list | add-cli …"
+    exit 0
+  fi
+
+  local choice
+  choice="$(ui_choose "Configure Wasabi mounts" \
+    "Add mount…" \
+    "Edit mount…" \
+    "Remove mount…" \
+    "Show current mounts" \
+    "Open mounts.json in editor")"
+  [[ -z "$choice" ]] && exit 0
+
+  case "$choice" in
+    "Add mount…"*) wizard_add ;;
+    "Edit mount…"*) wizard_edit ;;
+    "Remove mount…"*) wizard_remove ;;
+    "Show current"*)
+      local text
+      text="$(cmd_list)"
+      ui_alert "$text" "Configured mounts"
+      ;;
+    "Open mounts.json"*)
+      ensure_config_json
+      open "$WASABI_CONFIG_JSON"
+      ;;
+  esac
+}
+
+cmd_add_cli() {
+  # wasabi-config add-cli <id> <label> <remote> <path> [mode]
+  local id="${1:-}" label="${2:-}" remote="${3:-}" path="${4:-}" mode="${5:-full}"
+  if [[ -z "$id" || -z "$remote" || -z "$path" ]]; then
+    echo "Usage: wasabi-config add-cli <id> <label> <remote> <path> [vfs_cache_mode]" >&2
+    exit 1
+  fi
+  [[ -z "$label" ]] && label="$id"
+  add_mount_record "$id" "$label" "$remote" "$path" "$mode"
+}
+
+cmd_remove_cli() {
+  local id="${1:-}"
+  [[ -z "$id" ]] && { echo "Usage: wasabi-config remove-cli <id>" >&2; exit 1; }
+  if is_mounted "$(get_mount_by_id "$id" | cut -f4)"; then
+    "$ROOT/bin/wasabi-unmount" "$id" || true
+  fi
+  remove_mount_record "$id"
+}
+
+usage() {
+  cat <<EOF
+Usage: wasabi-config [command]
+
+  (no args)     Interactive Configure menu (macOS dialogs)
+  add           Add-mount wizard
+  edit          Edit-mount wizard
+  remove        Remove-mount wizard
+  list          Print mounts
+  add-cli …     Non-interactive add
+  remove-cli …  Non-interactive remove
+
+Config file: $WASABI_CONFIG_JSON
+EOF
+}
+
+main() {
+  ensure_config_json
+  local cmd="${1:-}"
+  case "$cmd" in
+    ""|menu|configure) wizard_menu ;;
+    add) shift || true; wizard_add ;;
+    edit) shift || true; wizard_edit ;;
+    remove) shift || true; wizard_remove ;;
+    list) cmd_list ;;
+    add-cli) shift; cmd_add_cli "$@" ;;
+    remove-cli) shift; cmd_remove_cli "$@" ;;
+    -h|--help|help) usage ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Debug: prove SwiftBar can launch our scripts. Writes to logs/ping.log + notification.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+ensure_log_dir
+ts="$(date '+%Y-%m-%d %H:%M:%S')"
+msg="ping OK at ${ts} (SwiftBar action works)"
+echo "[$ts] $msg" >>"$WASABI_LOG_DIR/ping.log"
+log_action "$msg"
+ui_notify "$msg" "Wasabi ping"
+ui_alert "$msg
+
+If you see this, menu actions are reaching our scripts.
+Logs: $WASABI_LOG_DIR" "Wasabi ping"

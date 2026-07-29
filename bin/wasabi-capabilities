@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Report or help install mount backends.
+#   wasabi-capabilities           human report
+#   wasabi-capabilities --json
+#   wasabi-capabilities --install-macfuse   # brew if available, else open site
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+# shellcheck source=../lib/capabilities.sh
+source "$ROOT/lib/capabilities.sh"
+
+# Ensure we at least try to have a binary for detection
+"$ROOT/bin/ensure-rclone" >/dev/null 2>&1 || true
+
+case "${1:-}" in
+  --json)
+    print_capabilities
+    ;;
+  --install-macfuse)
+    help_install_macfuse --install
+    ;;
+  --help-macfuse)
+    help_install_macfuse
+    ;;
+  -h|--help)
+    echo "Usage: wasabi-capabilities [--json|--help-macfuse|--install-macfuse]"
+    ;;
+  *)
+    print_capabilities_human
+    echo
+    echo "Install macFUSE help:  $0 --help-macfuse"
+    echo "Try brew install:      $0 --install-macfuse"
+    ;;
+esac

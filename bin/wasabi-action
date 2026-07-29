@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Single entrypoint for SwiftBar menu actions.
+# No Accessibility required. Logs to logs/actions.log.
+#
+# SwiftBar invokes:
+#   /bin/bash wasabi-action <cmd> [args...]
+#
+#   wasabi-action mount <id>
+#   wasabi-action unmount <id>
+#   wasabi-action unmount-all
+#   wasabi-action mount-all
+#   wasabi-action config [add|edit|remove]
+#   wasabi-action ensure-rclone
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+
+ensure_log_dir
+log_action "action argv: $*"
+
+# Do not `exec`-redirect the whole process: that can interfere with GUI helpers.
+# Mirror a short line to the log and keep stdout free for osascript.
+run_logged() {
+  log_action "run: $*"
+  "$@"
+  local rc=$?
+  log_action "done rc=$rc: $*"
+  return "$rc"
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  mount)
+    run_logged "$ROOT/bin/wasabi-mount" "$@"
+    ;;
+  unmount)
+    run_logged "$ROOT/bin/wasabi-unmount" "$@"
+    ;;
+  unmount-all)
+    run_logged "$ROOT/bin/wasabi-unmount" --all
+    ;;
+  mount-all)
+    run_logged "$ROOT/scripts/mount-all.sh"
+    ;;
+  config)
+    run_logged "$ROOT/bin/wasabi-config" "$@"
+    ;;
+  ensure-rclone)
+    if run_logged "$ROOT/bin/ensure-rclone"; then
+      ver="$("$(rclone_bin)" version 2>/dev/null | head -1 || echo rclone)"
+      ui_notify "rclone ready: $ver"
+    else
+      ui_alert "Failed to install rclone. See logs/ensure-rclone.log and logs/actions.log"
+      exit 1
+    fi
+    ;;
+  ping)
+    run_logged "$ROOT/bin/wasabi-ping"
+    ;;
+  "")
+    ui_alert "wasabi-action: missing command"
+    exit 1
+    ;;
+  *)
+    ui_alert "Unknown action: $cmd
+
+Try: mount, unmount, config, ensure-rclone, ping"
+    exit 1
+    ;;
+esac

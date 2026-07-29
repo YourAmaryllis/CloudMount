@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Download the official rclone binary for this OS/arch into vendor/rclone/<platform>/.
+# Never installs into the user's home directory as a free-floating binary tree.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+
+RCLONE_VERSION="${RCLONE_VERSION:-current}" # or e.g. v1.74.3
+FORCE="${1:-}"
+
+plat="$(platform_key)"
+dest_dir="$RCLONE_VENDOR_DIR/$plat"
+bin="$(rclone_bin)"
+
+if [[ -x "$bin" && "$FORCE" != "--force" ]]; then
+  echo "rclone ready: $bin"
+  "$bin" version | head -3
+  exit 0
+fi
+
+os="$(os_name)"
+arch="$(arch_name)"
+
+case "$os" in
+  darwin) pkg_os="osx" ;;
+  linux) pkg_os="linux" ;;
+  windows) pkg_os="windows" ;;
+  *)
+    echo "Unsupported OS: $os" >&2
+    exit 1
+    ;;
+esac
+
+case "$arch" in
+  arm64|amd64|386) ;;
+  *)
+    echo "Unsupported arch: $arch" >&2
+    exit 1
+    ;;
+esac
+
+ext="zip"
+url="https://downloads.rclone.org/rclone-${RCLONE_VERSION}-${pkg_os}-${arch}.${ext}"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/wasabi-rclone.XXXXXX")"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+echo "Downloading $url"
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$url" -o "$tmp/rclone.zip"
+else
+  echo "curl is required" >&2
+  exit 1
+fi
+
+echo "Extracting…"
+mkdir -p "$dest_dir"
+unzip -q "$tmp/rclone.zip" -d "$tmp/out"
+
+# Archive layout: rclone-vX.Y.Z-osx-arm64/rclone
+found="$(find "$tmp/out" -type f \( -name rclone -o -name rclone.exe \) | head -1)"
+if [[ -z "$found" ]]; then
+  echo "rclone binary not found in archive" >&2
+  exit 1
+fi
+
+cp "$found" "$bin"
+chmod +x "$bin"
+
+echo "Installed: $bin"
+"$bin" version | head -3

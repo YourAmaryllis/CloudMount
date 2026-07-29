@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Print mount status (human or machine-readable).
+#   wasabi-status           human table
+#   wasabi-status --tsv     id\tlabel\tmounted\tremote\tpath
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+
+ensure_config_json
+
+mode="${1:-}"
+if [[ "$mode" == "--tsv" ]]; then
+  while IFS=$'\t' read -r id label remote path vfs kind; do
+    ep="$(expand_path "$path")"
+    if is_mounted "$ep"; then
+      st="1"
+    else
+      st="0"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$label" "$st" "$remote" "$ep" "${kind:-fuse}"
+  done < <(list_mounts_tsv)
+  exit 0
+fi
+
+printf '%-12s %-8s %-6s %-28s %s\n' "ID" "STATE" "KIND" "REMOTE" "PATH"
+printf '%-12s %-8s %-6s %-28s %s\n' "------------" "--------" "------" "----------------------------" "----"
+while IFS=$'\t' read -r id label remote path vfs kind; do
+  ep="$(expand_path "$path")"
+  if is_mounted "$ep"; then
+    st="mounted"
+  else
+    st="—"
+  fi
+  printf '%-12s %-8s %-6s %-28s %s\n' "$id" "$st" "${kind:-fuse}" "$remote" "$ep"
+done < <(list_mounts_tsv)

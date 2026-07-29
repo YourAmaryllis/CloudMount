@@ -1,0 +1,12 @@
+{
+  "mounts": [
+    {
+      "id": "nas",
+      "label": "NAS",
+      "remote": "wasabi:nas-tsang2",
+      "path": "~/nas",
+      "mount_kind": "fuse",
+      "vfs_cache_mode": "full"
+    }
+  ]
+}

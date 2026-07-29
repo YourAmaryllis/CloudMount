@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""CloudMount CLI — hosts, mounts, setup, GUI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+# Allow running from repo without install
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+def _j(data: object) -> None:
+    print(json.dumps(data, indent=2))
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="cloudmount", description="CloudMount — rclone mounts & hosts")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("setup", help="Download rclone, migrate, detect capabilities")
+    sub.add_parser("status", help="JSON status")
+    sub.add_parser("capabilities", help="Mount backend capabilities")
+    s = sub.add_parser("prefs")
+    s.add_argument("--enable-fuse", type=lambda x: x.lower() == "true", default=None)
+    s.add_argument("--enable-nfs", type=lambda x: x.lower() == "true", default=None)
+    s.add_argument("--default-kind", choices=["fuse", "nfs"], default=None)
+
+    h = sub.add_parser("host-list")
+    h = sub.add_parser("host-add")
+    h.add_argument("--name", required=True)
+    h.add_argument("--type", default="s3", dest="type_")
+    h.add_argument("--provider", default="Wasabi")
+    h.add_argument("--endpoint", default="https://s3.us-east-1.wasabisys.com")
+    h.add_argument("--region", default="us-east-1")
+    h.add_argument("--access-key", required=True)
+    h.add_argument("--secret-key", required=True)
+
+    hd = sub.add_parser("host-delete")
+    hd.add_argument("id")
+    ht = sub.add_parser("host-test")
+    ht.add_argument("id")
+    hl = sub.add_parser("host-lsd")
+    hl.add_argument("id")
+    hl.add_argument("--prefix", default="")
+
+    sub.add_parser("mount-list")
+    ma = sub.add_parser("mount-add")
+    ma.add_argument("--label", required=True)
+    ma.add_argument("--host-id", required=True)
+    ma.add_argument("--remote-path", required=True)
+    ma.add_argument("--path", required=True)
+    ma.add_argument("--kind", choices=["fuse", "nfs"], default="nfs")
+    ma.add_argument("--vfs", default="full")
+
+    mb = sub.add_parser(
+        "mount-bulk",
+        help="Add mounts for several remote paths (e.g. nas-tsang2/pictures nas-tsang2/music)",
+    )
+    mb.add_argument("--host-id", required=True)
+    mb.add_argument(
+        "remote_paths",
+        nargs="+",
+        help="Remote paths: bucket or bucket/subdir",
+    )
+    mb.add_argument(
+        "--local-root",
+        default="~/CloudMount",
+        help="Local parent for mount points (avoid bare ~ — collides with ~/Pictures)",
+    )
+    mb.add_argument("--kind", choices=["fuse", "nfs"], default="nfs")
+    mb.add_argument(
+        "--label-from",
+        choices=["basename", "full"],
+        default="basename",
+        help="basename → label/path from last segment; full → keep path structure",
+    )
+
+    md = sub.add_parser("mount-delete")
+    md.add_argument("id")
+    mm = sub.add_parser("mount")
+    mm.add_argument("id")
+    um = sub.add_parser("unmount")
+    um.add_argument("id")
+    sub.add_parser("mount-all")
+    sub.add_parser("unmount-all")
+
+    g = sub.add_parser("gui", help="Open the web UI (default port 8765)")
+    g.add_argument("--port", type=int, default=8765)
+    g.add_argument("--no-open", action="store_true")
+    s2 = sub.add_parser("serve", help="Same as gui")
+    s2.add_argument("--port", type=int, default=8765)
+    s2.add_argument("--no-open", action="store_true")
+
+    sub.add_parser("install-menubar", help="Install SwiftBar plugin")
+    mf = sub.add_parser("install-macfuse-help")
+    mf.add_argument("--brew", action="store_true", help="Try brew install --cask macfuse")
+
+    args = p.parse_args(argv)
+
+    from core import api, capabilities, hosts, mounts
+    from core.rclone_bin import ensure_rclone
+
+    if args.cmd == "setup":
+        _j(api.setup())
+        return 0
+    if args.cmd == "status":
+        _j(api.status())
+        return 0
+    if args.cmd == "capabilities":
+        _j(capabilities.report())
+        return 0
+    if args.cmd == "prefs":
+        kw = {}
+        if args.enable_fuse is not None:
+            kw["enable_fuse"] = args.enable_fuse
+        if args.enable_nfs is not None:
+            kw["enable_nfs"] = args.enable_nfs
+        if args.default_kind is not None:
+            kw["default_mount_kind"] = args.default_kind
+        _j(api.set_prefs(**kw) if kw else api.status()["prefs"])
+        return 0
+    if args.cmd == "host-list":
+        _j(hosts.list_hosts())
+        return 0
+    if args.cmd == "host-add":
+        h = hosts.upsert_host(
+            name=args.name,
+            type_=args.type_,
+            provider=args.provider,
+            endpoint=args.endpoint,
+            region=args.region,
+            access_key=args.access_key,
+            secret_key=args.secret_key,
+        )
+        _j(h)
+        return 0
+    if args.cmd == "host-delete":
+        hosts.delete_host(args.id)
+        _j({"ok": True})
+        return 0
+    if args.cmd == "host-test":
+        _j(hosts.test_host(args.id))
+        return 0
+    if args.cmd == "host-lsd":
+        _j(hosts.list_remote_paths(args.id, args.prefix))
+        return 0
+    if args.cmd == "mount-list":
+        _j(mounts.list_mounts())
+        return 0
+    if args.cmd == "mount-add":
+        m = mounts.upsert_mount(
+            label=args.label,
+            host_id=args.host_id,
+            remote_path=args.remote_path,
+            path=args.path,
+            mount_kind=args.kind,
+            vfs_cache_mode=args.vfs,
+        )
+        _j(m)
+        return 0
+    if args.cmd == "mount-bulk":
+        _j(
+            mounts.bulk_add_from_paths(
+                host_id=args.host_id,
+                remote_paths=args.remote_paths,
+                local_root=args.local_root,
+                mount_kind=args.kind,
+                label_from=args.label_from,
+            )
+        )
+        return 0
+    if args.cmd == "mount-delete":
+        mounts.delete_mount(args.id)
+        _j({"ok": True})
+        return 0
+    if args.cmd == "mount":
+        _j(mounts.mount(args.id))
+        return 0
+    if args.cmd == "unmount":
+        _j(mounts.unmount(args.id))
+        return 0
+    if args.cmd == "mount-all":
+        _j(mounts.mount_all())
+        return 0
+    if args.cmd == "unmount-all":
+        _j(mounts.unmount_all())
+        return 0
+    if args.cmd in ("gui", "serve"):
+        port = getattr(args, "port", 8765) or 8765
+        no_open = getattr(args, "no_open", False)
+        from gui.server import run_server
+
+        run_server(port=port, open_browser=not no_open and args.cmd == "gui")
+        return 0
+    if args.cmd == "install-menubar":
+        from scripts.install_menubar import install
+
+        _j(install())
+        return 0
+    if args.cmd == "install-macfuse-help":
+        if args.brew:
+            _j(capabilities.try_brew_install_macfuse())
+        else:
+            _j(capabilities.help_install_macfuse(True))
+        return 0
+
+    p.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}), file=sys.stderr)
+        raise SystemExit(1)

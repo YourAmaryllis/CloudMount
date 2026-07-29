@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Unmount a configured remote by id: wasabi-unmount <id>
+# wasabi-unmount --all
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+
+unmount_one() {
+  local id="$1"
+  local row mid label remote path mode
+  row="$(get_mount_by_id "$id" || true)"
+  if [[ -z "$row" ]]; then
+    log_action "unmount unknown id: $id"
+    ui_notify "Unknown mount: $id"
+    return 1
+  fi
+  IFS=$'\t' read -r mid label remote path mode <<<"$row"
+  path="$(expand_path "$path")"
+
+  if ! is_mounted "$path"; then
+    local pid
+    pid="$(rclone_pid_for "$remote" "$path")"
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+      log_action "killed leftover rclone $pid for $mid"
+      ui_notify "Stopped leftover process for $label"
+    else
+      ui_notify "Not mounted: $label"
+    fi
+    return 0
+  fi
+
+  case "$(os_name)" in
+    darwin)
+      umount "$path" 2>/dev/null || diskutil unmount "$path" 2>/dev/null || true
+      ;;
+    linux)
+      fusermount -u "$path" 2>/dev/null || umount "$path" 2>/dev/null || true
+      ;;
+    windows)
+      ui_alert "Windows unmount not implemented yet"
+      return 1
+      ;;
+  esac
+
+  if is_mounted "$path"; then
+    local pid
+    pid="$(rclone_pid_for "$remote" "$path")"
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 0.5
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    umount -f "$path" 2>/dev/null || true
+  fi
+
+  if is_mounted "$path"; then
+    log_action "unmount FAIL: $mid"
+    ui_alert "Failed to unmount $label at $path"
+    return 1
+  fi
+  log_action "unmount OK: $mid"
+  ui_notify "Unmounted $label"
+}
+
+if [[ "${1:-}" == "--all" ]]; then
+  rc=0
+  while IFS=$'\t' read -r id _rest; do
+    unmount_one "$id" || rc=1
+  done < <(list_mounts_tsv)
+  exit "$rc"
+fi
+
+id="${1:-}"
+if [[ -z "$id" ]]; then
+  echo "Usage: wasabi-unmount <id>|--all" >&2
+  exit 1
+fi
+unmount_one "$id"
