@@ -1,99 +1,21 @@
-# Build CloudMount.dmg and publish a GitHub Release on this repository.
-#
-# One macOS build (macos-14). The app is Python + shell launcher; rclone is
-# downloaded per-machine on first setup, so one DMG works on Apple Silicon and Intel.
-#
-# Trigger:
-#   - Push a version tag:  git tag v0.0.1 && git push origin v0.0.1
-#   - Or Actions → Release DMG → Run workflow
+# Back-compat: redirect name kept for old links.
+# Prefer workflow "Release" (release.yml) which builds macOS + Windows.
 
 name: Release DMG
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version without v prefix (empty = VERSION file or tag)"
+      note:
+        description: "Use the Release workflow instead (macOS + Windows)."
         required: false
-        default: ""
-      prerelease:
-        description: "Mark GitHub Release as prerelease"
-        type: boolean
-        default: false
-
-permissions:
-  contents: write
+        default: "deprecated-use-Release"
 
 jobs:
-  build-and-release:
-    name: Build DMG & release
-    runs-on: macos-14
+  redirect:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Resolve version
-        id: ver
+      - name: Point to unified Release workflow
         run: |
-          set -euo pipefail
-          if [[ -n "${{ github.event.inputs.version }}" ]]; then
-            V="${{ github.event.inputs.version }}"
-            V="${V#v}"
-          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            V="$(tr -d '[:space:]' < VERSION)"
-          fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "$V" > VERSION
-          echo "Building CloudMount v$V"
-          uname -m
-
-      - name: Make scripts executable
-        run: chmod +x scripts/*.sh bin/* plugins/*.sh 2>/dev/null || true
-
-      - name: Build DMG
-        run: ./scripts/build-dmg.sh
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: CloudMount-${{ steps.ver.outputs.version }}-dmg
-          path: dist/CloudMount-*.dmg
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: CloudMount v${{ steps.ver.outputs.version }}
-          generate_release_notes: true
-          prerelease: ${{ github.event.inputs.prerelease || false }}
-          files: dist/CloudMount-*.dmg
-          fail_on_unmatched_files: true
-          body: |
-            ## CloudMount v${{ steps.ver.outputs.version }}
-
-            Open source under the [MIT License](https://github.com/${{ github.repository }}/blob/main/LICENSE).
-
-            ### Download
-            - `CloudMount-${{ steps.ver.outputs.version }}.dmg` — macOS (Apple Silicon and Intel)
-
-            ### Install
-            1. Download the DMG
-            2. Open it → drag **CloudMount** to Applications
-            3. First launch: right-click → **Open** if Gatekeeper warns (**unsigned** build)
-            4. App downloads official rclone for your Mac on first setup
-
-            ### Docs
-            - [README](https://github.com/${{ github.repository }}#readme)
-            - [Mount modes](https://github.com/${{ github.repository }}/blob/main/docs/MOUNT_MODES.md)
-
-            ### Notes
-            - Tested remotes: **Wasabi (S3)** and **Proton Drive** (other rclone types untested)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "::notice::This workflow is deprecated. Use Actions → Release (release.yml) for macOS DMG + Windows installer."
+          exit 1

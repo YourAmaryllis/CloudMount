@@ -1,0 +1,150 @@
+# Build macOS DMG + Windows installer, publish one GitHub Release.
+#
+# Trigger:
+#   - Tag: git tag v0.0.1 && git push origin v0.0.1
+#   - Or Actions → Release → Run workflow
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without v prefix (empty = VERSION file or tag)"
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark GitHub Release as prerelease"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  resolve-version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            V="${{ github.event.inputs.version }}"
+            V="${V#v}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(tr -d '[:space:]' < VERSION)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "v$V"
+
+  macos-dmg:
+    name: macOS DMG
+    needs: resolve-version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set VERSION
+        run: echo "${{ needs.resolve-version.outputs.version }}" > VERSION
+      - name: Build DMG
+        run: |
+          chmod +x scripts/*.sh bin/* plugins/*.sh 2>/dev/null || true
+          ./scripts/build-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/CloudMount-*.dmg
+          if-no-files-found: error
+
+  windows-installer:
+    name: Windows installer
+    needs: resolve-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set VERSION
+        shell: bash
+        run: echo "${{ needs.resolve-version.outputs.version }}" > VERSION
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build package + installer
+        shell: pwsh
+        run: |
+          ./scripts/build-windows.ps1 -Version "${{ needs.resolve-version.outputs.version }}"
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/CloudMount-*-windows-setup.exe
+            dist/CloudMount-*-windows.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [resolve-version, macos-dmg, windows-installer]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lah dist/
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.resolve-version.outputs.version }}
+          name: CloudMount v${{ needs.resolve-version.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          files: |
+            dist/CloudMount-*.dmg
+            dist/CloudMount-*-windows-setup.exe
+            dist/CloudMount-*-windows.zip
+          fail_on_unmatched_files: true
+          body: |
+            ## CloudMount v${{ needs.resolve-version.outputs.version }}
+
+            Open source under the [MIT License](https://github.com/${{ github.repository }}/blob/main/LICENSE).
+
+            ### Downloads
+
+            | File | Platform |
+            |------|----------|
+            | `CloudMount-${{ needs.resolve-version.outputs.version }}.dmg` | **macOS** (Apple Silicon & Intel) |
+            | `CloudMount-${{ needs.resolve-version.outputs.version }}-windows-setup.exe` | **Windows** installer |
+            | `CloudMount-${{ needs.resolve-version.outputs.version }}-windows.zip` | **Windows** portable zip |
+
+            ### macOS install
+            1. Open the DMG → drag **CloudMount** to Applications  
+            2. Right-click → **Open** if Gatekeeper warns (unsigned)  
+            3. rclone downloads on first setup  
+
+            ### Windows install
+            1. Run the **setup.exe** (or extract the zip)  
+            2. Install [**Python 3**](https://www.python.org/downloads/) (Add to PATH) if needed  
+            3. Install [**WinFsp**](https://winfsp.dev/rel/) (required for mounts)  
+            4. Run **First-Run Setup** (or from Start Menu) → tray icon appears  
+            5. Full notes: [docs/WINDOWS.md](https://github.com/${{ github.repository }}/blob/main/docs/WINDOWS.md)  
+
+            ### Notes
+            - Tested remotes: **Wasabi (S3)** and **Proton Drive**  
+            - Builds are **unsigned**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

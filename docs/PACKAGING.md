@@ -47,7 +47,23 @@ CloudMount.app/Contents/
 
 ## CI release
 
-[`.github/workflows/release-dmg.yml`](../.github/workflows/release-dmg.yml) builds one DMG on `macos-14` and attaches it to a GitHub Release. The bundle is arch-agnostic (Python launcher; rclone is fetched for the user’s Mac on first setup).
+[`.github/workflows/release.yml`](../.github/workflows/release.yml):
+
+| Job | Runner | Output |
+|-----|--------|--------|
+| macOS DMG | `macos-14` | `CloudMount-<ver>.dmg` |
+| Windows installer | `windows-latest` + Inno Setup | `CloudMount-<ver>-windows-setup.exe` + `.zip` |
+
+Both assets attach to one GitHub Release on tag `v*`.
+
+### Windows package (local)
+
+```powershell
+# Optional: choco install innosetup
+powershell -File scripts/build-windows.ps1
+```
+
+See [WINDOWS.md](./WINDOWS.md).
 
 ## Code signing & notarization
 
