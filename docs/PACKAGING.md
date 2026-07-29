@@ -1,117 +1,69 @@
-# macOS packaging (DMG)
+# Packaging and install
 
-Goal: double-click install experience — not “clone a folder and symlink a SwiftBar plugin.”
+## User install (recommended)
 
-## Target layout inside the DMG
+1. Download the DMG for your Mac from [Releases](https://github.com/arthurtsang/CloudMount/releases)  
+   - **Apple Silicon:** `CloudMount-*-darwin-arm64.dmg`  
+   - **Intel:** `CloudMount-*-darwin-amd64.dmg`  
+2. Drag **CloudMount.app** to **Applications**  
+3. Open the app (right-click → **Open** if Gatekeeper warns — builds are unsigned for now)  
+4. Setup: rclone is downloaded if needed; check FUSE / NFS capabilities  
+5. Add a host → add mounts → mount  
+
+You do not need to edit rclone config files by hand. Secrets go in the macOS Keychain.
+
+## What is in the DMG
 
 ```
 CloudMount.dmg
-  CloudMount.app          # or “Wasabi Mounts.app”
-  Applications →          # standard drag target symlink
-  README (optional)
+  CloudMount.app
+  Applications →          # drag target
 ```
 
-### What the app contains (bundle)
+### App bundle (simplified)
 
 ```
 CloudMount.app/Contents/
-  MacOS/CloudMount              # launcher (Swift or bash stub → open UI / install plugin)
-  Resources/
-    vendor/rclone/darwin-arm64/rclone
-    vendor/rclone/darwin-amd64/rclone   # fat app or separate builds
-    plugins/rclone-mounts.10s.sh
-    scripts/postinstall-helper.sh
+  MacOS/CloudMount              # launcher
+  Resources/…                   # app code
   Info.plist
 ```
 
-**Universal binary strategy (pick one):**
+**rclone is not required inside the DMG.** On first run the app downloads the official binary into Application Support:
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| Two DMGs (arm64 / intel) | Smaller | Two downloads |
-| One DMG, two rclone binaries, pick at runtime | One download | Larger |
-| Universal rclone if available | Clean | Official may only ship per-arch zips |
+```text
+~/Library/Application Support/YourAmaryllis/CloudMount/
+  bin/darwin-arm64/rclone    # or darwin-amd64
+  rclone.conf
+  state.json
+  logs/
+```
 
-We already pick arch at runtime (`ensure-rclone` / `platform_key`). DMG can ship **both** arch binaries under `Resources/vendor/rclone/`.
-
-## Installer flow (first launch)
-
-1. User drags **CloudMount.app** → `/Applications`.  
-2. First open:  
-   - Copy/link SwiftBar plugin into `~/Library/Application Support/SwiftBar/Plugins/` **or** use built-in `MenuBarExtra` (preferred long-term — no SwiftBar dependency).  
-   - `ensure-rclone` if binaries missing.  
-   - Capability wizard: detect FUSE / NFS; enable modes; help install macFUSE.  
-3. Optional: Login Item for status menu.
-
-**Short term (current bash stack):** app is a thin wrapper that:
-
-- Runs `scripts/install-menubar.sh`  
-- Opens “Setup” dialog (capabilities + instructions)  
-- Leaves SwiftBar as menu host until native status item exists  
-
-**Long term:** SwiftUI app owns menu bar; SwiftBar optional.
-
-## Building a DMG (tooling)
-
-### Option A — `create-dmg` (simple)
+## Local build
 
 ```bash
-brew install create-dmg
-create-dmg \
-  --volname "CloudMount" \
-  --window-pos 200 120 \
-  --window-size 600 400 \
-  --icon-size 100 \
-  --icon "CloudMount.app" 150 190 \
-  --app-drop-link 450 190 \
-  CloudMount-0.1.0.dmg \
-  dist/CloudMount.app
+./scripts/build-app.sh
+./scripts/build-dmg.sh
+# ARCH_SUFFIX=arm64|amd64 optional; default from uname -m
 ```
 
-### Option B — `appdmg` (JSON config)
+## CI release
 
-```json
-{
-  "title": "CloudMount",
-  "contents": [
-    { "x": 150, "y": 200, "type": "file", "path": "dist/CloudMount.app" },
-    { "x": 450, "y": 200, "type": "link", "path": "/Applications" }
-  ]
-}
-```
+[`.github/workflows/release-dmg.yml`](../.github/workflows/release-dmg.yml):
 
-### Option C — Xcode Archive → Organizer → Distribute (native Swift app)
+| Runner | Arch | Artifact |
+|--------|------|----------|
+| `macos-14` | arm64 | `CloudMount-<ver>-darwin-arm64.dmg` |
+| `macos-13` | amd64 | `CloudMount-<ver>-darwin-amd64.dmg` |
 
-Best when the UI is real SwiftUI; signs with Developer ID + notarization.
+Both DMGs are attached to one GitHub Release on this repository (`GITHUB_TOKEN`).
 
-## Code signing & notarization (required for smooth Gatekeeper)
+## Code signing & notarization
 
-Without this, users get “app is damaged” / “can’t be opened”:
+Without Developer ID + notarization, macOS may show “can’t be opened” / “damaged”:
 
-1. **Developer ID Application** certificate  
-2. `codesign --deep --force --options runtime … CloudMount.app`  
-3. Notarize: `xcrun notarytool submit …`  
-4. Staple: `xcrun stapler staple CloudMount.app`  
-5. Build DMG from stapled app; optionally notarize DMG too  
+1. Sign with **Developer ID Application**  
+2. Notarize with `notarytool`  
+3. Staple the app (and optionally the DMG)  
 
-CI (GitHub Actions macos runner) can automate release DMGs.
-
-## Scripts to add in-repo
-
-| Script | Role |
-|--------|------|
-| `scripts/build-app-stub.sh` | Assemble `.app` from Resources + launcher |
-| `scripts/build-dmg.sh` | create-dmg from `dist/` |
-| `scripts/detect-capabilities` | JSON report for UI |
-| `scripts/install-macfuse-help.sh` | brew cask or open website |
-
-## User-facing install story
-
-1. Download **CloudMount-x.y.z.dmg**  
-2. Drag to Applications  
-3. Open → allow if prompted  
-4. Setup wizard: rclone ready · FUSE? · NFS? · Install macFUSE help  
-5. Menu bar icon appears (SwiftBar or built-in)  
-6. Open Mounts window → add host → mount  
-
-No requirement to edit `~/.wasabi.json` or know about `rclone.conf` (after Keychain redesign).
+Current public builds may still be **unsigned**. Use right-click → Open until signing is enabled.

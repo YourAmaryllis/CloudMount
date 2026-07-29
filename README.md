@@ -1,99 +1,104 @@
-# CloudMount (wasabi project)
+# CloudMount
 
-Menu-bar + single-window manager for **rclone mounts** (Wasabi/S3 and any rclone remote).
+macOS app to mount cloud storage with **rclone** — add hosts, pick folders, mount as FUSE or NFS, keep credentials in the Keychain.
 
-- **FUSE** (`rclone mount`) and **NFS** (`rclone nfsmount`) — pick per mount  
-- Credentials in **macOS Keychain**  
-- App-owned state under Application Support (not hand-edited `~/.wasabi.json`)  
-- Managed `rclone.conf`  
-- SwiftBar status icon + full UI at `http://127.0.0.1:8765/`  
-- DMG: `dist/CloudMount-0.2.0.dmg`
+**License:** [MIT](LICENSE)
 
-> Design notes: [docs/REDESIGN.md](docs/REDESIGN.md) · [docs/MOUNT_MODES.md](docs/MOUNT_MODES.md) · [docs/PACKAGING.md](docs/PACKAGING.md)
+Any rclone backend can be configured in the UI. **Tested so far: Wasabi (S3) and Proton Drive.** Other types are untested.
 
-## Quick start (dev)
+## Features
+
+- **FUSE** (`rclone mount`) and **NFS** (`rclone nfsmount`) — choose per mount  
+- Hosts and mounts managed in a local web UI (`http://127.0.0.1:8765/`)  
+- Secrets in **macOS Keychain** (saved when you edit a host)  
+- App data under Application Support  
+- Official rclone binary downloaded on first setup  
+- DMG install for **Apple Silicon** and **Intel** (currently unsigned)
+
+## Install (DMG)
+
+Download from [Releases](https://github.com/arthurtsang/CloudMount/releases):
+
+| File | Mac |
+|------|-----|
+| `CloudMount-*-darwin-arm64.dmg` | Apple Silicon |
+| `CloudMount-*-darwin-amd64.dmg` | Intel |
+
+1. Open the DMG → drag **CloudMount** to Applications  
+2. First launch: **right-click → Open** if Gatekeeper warns (unsigned build)  
+3. On first run the app downloads official rclone into Application Support  
+4. Browser UI opens → **Hosts** → add a remote → **Mounts** → mount  
+
+## Quick start (from source)
 
 ```bash
-cd ~/YourAmaryllis/wasabi
-chmod +x bin/cloudmount scripts/*.sh plugins/*.sh
-python3 bin/cloudmount setup          # rclone binary, migrate, Keychain import
-python3 bin/cloudmount install-menubar
-python3 bin/cloudmount gui            # opens browser UI
+chmod +x bin/cloudmount scripts/*.sh
+python3 bin/cloudmount setup
+python3 bin/cloudmount gui
 ```
 
-Or open the app:
+Or build the app bundle / DMG:
 
 ```bash
-./scripts/build-app.sh
-open dist/CloudMount.app
+./scripts/build-app.sh && open dist/CloudMount.app
+./scripts/build-dmg.sh   # → dist/CloudMount-<version>-darwin-<arch>.dmg
 ```
-
-DMG:
-
-```bash
-./scripts/build-dmg.sh
-open dist/CloudMount-0.2.0.dmg
-```
-
-(Unsigned — first launch may need right-click → Open.)
 
 ## UI
 
-| Tab | What |
-|-----|------|
-| **Mounts** | List, Mount / Unmount, Add / Edit / Remove; kind **nfs** or **fuse** |
-| **Hosts** | rclone remotes; access/secret keys → Keychain; Test connection |
-| **Setup** | Capabilities (macFUSE / nfsmount), enable modes, install help |
+| Tab | Purpose |
+|-----|---------|
+| **Mounts** | Mount / unmount, add paths, FUSE vs NFS |
+| **Hosts** | rclone remotes, credentials, Test connection |
+| **Setup** | Capabilities (macFUSE / nfsmount), preferences |
 
 ## CLI
 
 ```bash
 python3 bin/cloudmount status
-python3 bin/cloudmount capabilities
 python3 bin/cloudmount host-list
 python3 bin/cloudmount host-test <id>
 python3 bin/cloudmount mount <id>
 python3 bin/cloudmount unmount <id>
-python3 bin/cloudmount prefs --default-kind nfs --enable-fuse true --enable-nfs true
+python3 bin/cloudmount capabilities
 ```
 
-## Where data lives
+## Data locations
 
 | What | Where |
 |------|--------|
-| Mounts / hosts / prefs | `~/Library/Application Support/YourAmaryllis/CloudMount/state.json` |
+| State (hosts, mounts, prefs) | `~/Library/Application Support/YourAmaryllis/CloudMount/state.json` |
 | rclone config (no secrets) | `…/CloudMount/rclone.conf` |
-| Access keys | Keychain service `com.youramaryllis.cloudmount` |
+| Session tokens (e.g. Proton) | `…/CloudMount/session_tokens.json` (mode 0600) |
+| Credentials | Keychain service `com.youramaryllis.cloudmount` |
 | Logs | `…/CloudMount/logs/` |
-| Official rclone binary | `vendor/rclone/<platform>/` (also bundled in .app) |
-
-First `setup` migrates `~/.wasabi.json` + `config/mounts.json` once if present.
+| rclone binary | `…/CloudMount/bin/<platform>/rclone` |
 
 ## Mount kinds
 
-| Kind | Command | Needs | Feel |
-|------|---------|--------|------|
-| **nfs** | `rclone nfsmount` | official rclone | Network/share-like volume |
-| **fuse** | `rclone mount` | official rclone + **macFUSE** | Local path you choose |
+| Kind | Command | Needs |
+|------|---------|--------|
+| **nfs** | `rclone nfsmount` | Official rclone |
+| **fuse** | `rclone mount` | Official rclone + [macFUSE](https://osxfuse.github.io/) |
+
+See [docs/MOUNT_MODES.md](docs/MOUNT_MODES.md).
+
+## Releases (CI)
+
+Push a version tag to build both architectures and publish a GitHub Release:
 
 ```bash
-python3 bin/cloudmount install-macfuse-help
-python3 bin/cloudmount install-macfuse-help --brew
+# bump VERSION, commit, then:
+git tag v0.0.1
+git push origin v0.0.1
 ```
 
-## Menu bar (SwiftBar)
+Or **Actions → Release DMG → Run workflow**.  
+Workflow: [`.github/workflows/release-dmg.yml`](.github/workflows/release-dmg.yml)
 
-After `install-menubar`, SwiftBar shows **☁**.  
-**Open CloudMount…** launches the UI. Quick mount/unmount per entry.
+Version source: [`VERSION`](VERSION).
 
-Plugin: `plugins/cloudmount.5s.sh`  
-(params after `|` are **space**-separated for SwiftBar 2.x.)
+## Docs
 
-## YeungAD media bucket
-
-Wasabi bucket for the architecture site: **`yeungad`**.
-
-## vs RClone Manager
-
-We stay **mount + hosts + Keychain + menu bar**, not a full remote file manager.  
-See [docs/REDESIGN.md](docs/REDESIGN.md) for the comparison and brew-vs-official rclone notes.
+- [Mount modes (FUSE vs NFS)](docs/MOUNT_MODES.md)  
+- [Packaging & install notes](docs/PACKAGING.md)  

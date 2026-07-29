@@ -1,92 +1,88 @@
 # Mount modes: FUSE and NFS
 
-The app supports **both** ways to expose an rclone remote on macOS. Users can enable either or both (when setting up), and pick a mode **per mount**.
+CloudMount supports **both** ways to expose an rclone remote on macOS. You can enable either or both in **Setup**, and pick a mode **per mount**.
 
 ## Two backends
 
 | Mode | Command | Needs | How it feels in Finder |
 |------|---------|--------|-------------------------|
-| **fuse** | `rclone mount …` | Official rclone **with cmount** + **macFUSE** (or FSKit-capable macFUSE 5.x) | Often a path under home (e.g. `~/nas`) that feels like a normal folder |
-| **nfs** | `rclone nfsmount …` | rclone that includes `nfsmount` + macOS NFS client (built-in) | More like a **network / volume share** (often under `/Volumes/…`, eject-style) |
+| **fuse** | `rclone mount …` | Official rclone with FUSE support + **macFUSE** | A folder path you choose (e.g. under `~/CloudMount/…`) |
+| **nfs** | `rclone nfsmount …` | rclone with `nfsmount` + macOS NFS client (built-in) | More like a **network / volume share** (eject-style) |
 
-Same remote types (S3, Wasabi, Drive, …) work with either. Only the **local plumbing** differs.
+The same cloud remotes work with either mode. Only the **local plumbing** differs.
 
 ## Capability detection
 
-At setup and in UI:
+| Capability | How it is detected |
+|------------|--------------------|
+| FUSE mount | `rclone mount` available and macFUSE present |
+| macFUSE installed | macFUSE filesystem package present |
+| NFS mount | `rclone nfsmount` available |
 
-| Capability | How we detect |
-|------------|----------------|
-| Official-style `mount` (FUSE) | Vendor rclone: `rclone mount -h` succeeds **and** not the brew “mount disabled” message; plus macFUSE present |
-| macFUSE installed | `/Library/Filesystems/macfuse.fs` and/or `pkgutil --pkgs` matching macfuse |
-| `nfsmount` available | Vendor rclone: `rclone nfsmount -h` exits 0 |
+Homebrew’s rclone build on macOS often includes **nfsmount** but **not** FUSE `mount`. CloudMount downloads the **official** rclone binary on first setup so both modes can be available.
 
-Brew’s macOS rclone often has **nfsmount** but **not** FUSE `mount`. Our **vendored official binary** usually has **both**.
+## Enabling modes (Setup tab)
 
-## Enabling during binary / first-run setup
+- **Enable FUSE mounts** — requires macFUSE; if missing, use install help  
+- **Enable NFS mounts** — usually works once official rclone is installed  
 
-```
-[x] Enable FUSE mounts   → requires macFUSE; if missing → Install help
-[x] Enable NFS mounts    → usually just works with our rclone
-```
+Unchecked modes are hidden when adding mounts.
 
-User can leave one unchecked → that mode is hidden when adding mounts.
+### Install macFUSE
 
-### Help install macFUSE
-
-If possible (Homebrew present):
+If Homebrew is available:
 
 ```bash
 brew install --cask macfuse
 ```
 
-Else open https://macfuse.github.io/ and show:
+Or install from [macfuse.github.io](https://macfuse.github.io/):
 
-1. Download latest macFUSE 5.x  
-2. Install DMG  
-3. Allow system extension in System Settings  
+1. Download latest macFUSE  
+2. Install the package  
+3. Allow the system extension in System Settings  
 4. Reboot if prompted  
-5. Re-run “Detect capabilities”
+5. Re-run capability detection in CloudMount  
 
-We **cannot** silently install kernel extensions without user approval; helper = script + UI copy + optional brew.
+Kernel extensions cannot be installed silently; user approval is required.
 
-NFS: no extra package; if `nfsmount` missing, the binary is wrong → re-run ensure-rclone (official).
+If `nfsmount` is missing, re-run **Setup** so the app re-downloads official rclone.
 
 ## Per-mount config
 
+Each mount stores roughly:
+
 ```json
 {
-  "id": "nas",
-  "label": "NAS",
-  "remote": "wasabi:nas-tsang2",
-  "path": "~/nas",
+  "label": "Photos",
+  "remote_path": "my-bucket/photos",
+  "path": "~/CloudMount/photos",
   "mount_kind": "nfs",
   "vfs_cache_mode": "full"
 }
 ```
 
-`mount_kind`: `fuse` | `nfs` (default: prefer `nfs` if only NFS enabled; else `fuse` if only FUSE; else user choice).
+`mount_kind` is `fuse` or `nfs`. Default prefers **nfs** when both are enabled (less dependence on macFUSE).
 
 ## Unmount
 
 | Kind | Unmount |
 |------|---------|
-| fuse | `umount` / `diskutil unmount` + kill rclone if needed |
-| nfs | same path unmount + kill `rclone nfsmount` process |
+| fuse | Unmount the path + stop the rclone process |
+| nfs | Same for the NFS mount path + stop `rclone nfsmount` |
 
 ## Why both
 
-- You prefer **NFS** (share-like, less macFUSE drama).  
-- Others want **FUSE** path under `~/…`.  
-- Detection + install help avoids “nothing works” after install.
+- **NFS** — share-like volumes, fewer macFUSE issues  
+- **FUSE** — mount at an arbitrary path under your home folder  
+- Detection + install help avoid “nothing mounts after install”
 
 ## Relation to DMG install
 
-DMG installs the app + vendor rclone + optional “first-run wizard” that:
+First launch of the app:
 
 1. Downloads rclone if needed  
-2. Runs capability detection  
-3. Offers enable FUSE / enable NFS  
-4. Opens macFUSE install instructions if FUSE enabled but missing  
+2. Detects FUSE / NFS capabilities  
+3. Lets you enable modes and open macFUSE help if needed  
 
 See [PACKAGING.md](./PACKAGING.md).

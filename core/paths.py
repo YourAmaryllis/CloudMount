@@ -10,7 +10,15 @@ BUNDLE_ID = "com.youramaryllis.cloudmount"
 APP_SUPPORT = Path.home() / "Library" / "Application Support" / "YourAmaryllis" / "CloudMount"
 STATE_PATH = APP_SUPPORT / "state.json"
 RCLONE_CONF = APP_SUPPORT / "rclone.conf"
+# Ephemeral conf with Keychain secrets (obscured); rewritten before each rclone use
+RCLONE_RUNTIME_CONF = APP_SUPPORT / "rclone.runtime.conf"
+# Proton (etc.) session tokens after login — mode 0600 file, NOT Keychain.
+# Writing Keychain on every mount forces macOS password prompts; disk is fine here.
+SESSION_STORE = APP_SUPPORT / "session_tokens.json"
 LOG_DIR = APP_SUPPORT / "logs"
+# Downloaded official rclone lives here (DMG install — no source tree required)
+BIN_DIR = APP_SUPPORT / "bin"
+# Optional local/dev seed only (gitignored); never the primary install location
 VENDOR_RCLONE = ROOT / "vendor" / "rclone"
 
 # Prefer bundled Resources when running from .app
@@ -34,6 +42,7 @@ def app_resources() -> Path | None:
 def ensure_dirs() -> None:
     APP_SUPPORT.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def expand_user(path: str) -> Path:

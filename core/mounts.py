@@ -8,8 +8,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import capabilities
-from .hosts import get_host, host_env, write_rclone_conf
-from .paths import LOG_DIR, RCLONE_CONF, expand_user, prefer_tilde, ensure_dirs
+from .hosts import (
+    capture_session_tokens,
+    ensure_host_runtime_secrets,
+    get_host,
+    host_env,
+    write_rclone_conf,
+    write_runtime_conf,
+)
+from .paths import LOG_DIR, RCLONE_CONF, RCLONE_RUNTIME_CONF, expand_user, prefer_tilde, ensure_dirs
 from .rclone_bin import ensure_rclone, rclone_path, run_rclone
 from .state import load, new_id, save
 
@@ -65,7 +72,9 @@ def upsert_mount(
     if not get_host(host_id):
         raise ValueError("Host does not exist — create a host first")
 
-    remote_path = remote_path.strip().lstrip("/")
+    # Empty remote_path = root of the remote (Drive, Proton, SFTP, …).
+    # S3 users typically put "bucket" or "bucket/prefix" here.
+    remote_path = (remote_path or "").strip().strip("/")
     path = prefer_tilde(path)
 
     existing = None
@@ -173,18 +182,21 @@ def _pid_for(remote: str, path: str, *, only_cloudmount: bool = True) -> Optiona
     unrelated rclone mount on the same path.
     """
     p = str(expand_user(path))
-    conf = str(RCLONE_CONF)
+    conf_markers = (str(RCLONE_CONF), str(RCLONE_RUNTIME_CONF), "CloudMount")
     r = subprocess.run(["pgrep", "-fl", "rclone"], capture_output=True, text=True)
     for line in (r.stdout or "").splitlines():
         if remote not in line or p not in line:
             continue
         if " mount " not in f" {line} " and " nfsmount " not in line:
             continue
-        if only_cloudmount and conf not in line and "--config" not in line:
-            # Old scripts often omit --config; leave them alone
-            continue
-        if only_cloudmount and conf not in line:
-            continue
+        if only_cloudmount:
+            if not any(m in line for m in conf_markers) and "--config" not in line:
+                # Old scripts often omit --config; leave them alone
+                continue
+            if not any(m in line for m in conf_markers):
+                # Has --config but not ours
+                if "Application Support/YourAmaryllis/CloudMount" not in line:
+                    continue
         try:
             return int(line.split()[0])
         except ValueError:
@@ -217,7 +229,17 @@ def mount(mount_id: str) -> dict[str, Any]:
         cmd_name = "nfsmount"
 
     ensure_rclone()
+
+    missing = ensure_host_runtime_secrets(m["host_id"])
+    if missing:
+        return {"ok": False, "error": missing}
+
     write_rclone_conf()
+    # Runtime conf injects Keychain secrets as obscured values (needed for Proton Drive)
+    try:
+        runtime_conf = write_runtime_conf([m["host_id"]])
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
     path.mkdir(parents=True, exist_ok=True)
     remote = _remote_spec(m)
     env = host_env(m["host_id"])
@@ -228,7 +250,7 @@ def mount(mount_id: str) -> dict[str, Any]:
     cmd = [
         str(bin_path),
         "--config",
-        str(RCLONE_CONF),
+        str(runtime_conf),
         cmd_name,
         remote,
         str(path),
@@ -245,6 +267,7 @@ def mount(mount_id: str) -> dict[str, Any]:
     log.parent.mkdir(parents=True, exist_ok=True)
     logf = open(log, "a", buffering=1)
     logf.write(f"\n--- starting {cmd_name} {remote} -> {path}\n")
+    logf.write(f"config={runtime_conf}\n")
     proc = subprocess.Popen(
         cmd,
         stdout=logf,
@@ -255,22 +278,47 @@ def mount(mount_id: str) -> dict[str, Any]:
         close_fds=True,
     )
 
+    def _ok_payload() -> dict[str, Any]:
+        # rclone may have written client_* session tokens into the conf
+        try:
+            capture_session_tokens(m["host_id"], runtime_conf)
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "path": str(path),
+            "kind": kind,
+            "pid": proc.pid,
+            "remote": remote,
+        }
+
     for _ in range(40):
         if is_mounted(str(path)):
-            return {
-                "ok": True,
-                "path": str(path),
-                "kind": kind,
-                "pid": proc.pid,
-                "remote": remote,
-            }
+            return _ok_payload()
         if proc.poll() is not None:
             tail = log.read_text()[-2000:] if log.exists() else ""
-            return {"ok": False, "error": f"rclone exited early\n{tail}", "log": str(log)}
+            hint = ""
+            low = tail.lower()
+            if "2fa" in low or "incorrect login" in low or "8002" in tail:
+                hint = (
+                    "\n\nProton 2FA/login failed. Click Test on the host first. "
+                    "Use the Authenticator secret key (base32), not a 6-digit code. "
+                    "Re-enter password if needed."
+                )
+            if "input too short" in low or "obscured" in low:
+                hint = (
+                    "\n\nPassword was not rclone-obscured. Re-save the host, "
+                    "then Test, then Mount."
+                )
+            return {
+                "ok": False,
+                "error": f"rclone exited early\n{tail}{hint}",
+                "log": str(log),
+            }
         time.sleep(0.5)
 
     if is_mounted(str(path)):
-        return {"ok": True, "path": str(path), "kind": kind, "pid": proc.pid, "remote": remote}
+        return _ok_payload()
     tail = log.read_text()[-2000:] if log.exists() else ""
     return {
         "ok": False,

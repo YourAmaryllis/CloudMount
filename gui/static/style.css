@@ -194,6 +194,20 @@ dialog menu {
 }
 .browse-item .name:hover { text-decoration: underline; }
 #dlg-browse { max-width: 480px; }
+#dlg-host { max-width: 520px; max-height: 90vh; overflow: auto; }
+.host-dynamic {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 50vh;
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+.host-dynamic .field-help {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.15rem;
+}
 
 #toast {
   position: fixed;

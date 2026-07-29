@@ -16,7 +16,7 @@ import sys
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core import api, capabilities, hosts, mounts  # noqa: E402
+from core import api, backends, capabilities, hosts, mounts  # noqa: E402
 
 
 def _json_response(handler: BaseHTTPRequestHandler, code: int, data: Any) -> None:
@@ -67,6 +67,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/setup":
             _json_response(self, 200, api.setup())
             return
+        if path == "/api/backends":
+            _json_response(self, 200, backends.backends_catalog())
+            return
+        if path.startswith("/api/backends/"):
+            type_name = path[len("/api/backends/") :].strip("/")
+            _json_response(self, 200, backends.backend_schema(type_name))
+            return
         _json_response(self, 404, {"error": "not found"})
 
     def do_POST(self) -> None:
@@ -82,15 +89,30 @@ class Handler(BaseHTTPRequestHandler):
                 _json_response(self, 200, {"ok": True, "prefs": api.set_prefs(**body)})
                 return
             if path == "/api/host":
+                opts = dict(body.get("options") or {})
+                # Flatten known top-level fields into options for generic backends
+                for k in ("provider", "endpoint", "region", "acl", "env_auth"):
+                    if body.get(k) not in (None, ""):
+                        opts.setdefault(k, body[k])
+                secrets = dict(body.get("secrets") or {})
+                # Legacy field names
+                if body.get("access_key"):
+                    secrets.setdefault("access_key", body["access_key"])
+                    secrets.setdefault("access_key_id", body["access_key"])
+                if body.get("secret_key"):
+                    secrets.setdefault("secret_key", body["secret_key"])
+                    secrets.setdefault("secret_access_key", body["secret_key"])
                 h = hosts.upsert_host(
                     host_id=body.get("id"),
                     name=body["name"],
                     type_=body.get("type") or "s3",
-                    provider=body.get("provider") or "Wasabi",
-                    endpoint=body.get("endpoint") or "https://s3.us-east-1.wasabisys.com",
-                    region=body.get("region") or "us-east-1",
+                    provider=body.get("provider") or opts.get("provider"),
+                    endpoint=body.get("endpoint") or opts.get("endpoint"),
+                    region=body.get("region") or opts.get("region"),
                     access_key=body.get("access_key"),
                     secret_key=body.get("secret_key"),
+                    options=opts,
+                    secrets=secrets or None,
                 )
                 _json_response(self, 200, {"ok": True, "host": h})
                 return
@@ -113,7 +135,7 @@ class Handler(BaseHTTPRequestHandler):
                     mount_id=body.get("id"),
                     label=body["label"],
                     host_id=body["host_id"],
-                    remote_path=body["remote_path"],
+                    remote_path=body.get("remote_path") or "",
                     path=body["path"],
                     mount_kind=body.get("mount_kind") or "nfs",
                     vfs_cache_mode=body.get("vfs_cache_mode") or "full",

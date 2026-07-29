@@ -24,10 +24,18 @@ def status() -> dict[str, Any]:
                 "id": h["id"],
                 "name": h.get("name"),
                 "type": h.get("type"),
-                "provider": h.get("provider"),
-                "endpoint": h.get("endpoint"),
-                "region": h.get("region"),
-                "has_secrets": bool(keychain.get_host_secret(h["id"], "access_key")),
+                "provider": h.get("provider") or (h.get("options") or {}).get("provider"),
+                "endpoint": h.get("endpoint") or (h.get("options") or {}).get("endpoint"),
+                "region": h.get("region") or (h.get("options") or {}).get("region"),
+                "options": h.get("options") or {},
+                # One Keychain probe per host (cached in-process) — avoid a
+                # storm of security(1) calls on every status refresh.
+                "has_secrets": bool(
+                    keychain.get_host_secret(h["id"], "password")
+                    or keychain.get_host_secret(h["id"], "access_key")
+                    or keychain.get_host_secret(h["id"], "access_key_id")
+                    or keychain.get_host_secret(h["id"], "token")
+                ),
             }
             for h in hlist
         ],
@@ -78,5 +86,32 @@ def setup() -> dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": f"rclone download failed: {e}"}
     mig = migrate.migrate_if_needed()
+    scrub = {}
+    try:
+        from .hosts import scrub_secrets_from_state
+
+        scrub = scrub_secrets_from_state()
+    except Exception as e:
+        scrub = {"ok": False, "error": str(e)}
     caps = capabilities.report()
-    return {"ok": True, "migrate": mig, "capabilities": caps, "rclone_version": rclone_version()}
+    return {
+        "ok": True,
+        "migrate": mig,
+        "scrub": scrub,
+        "capabilities": caps,
+        "rclone_version": rclone_version(),
+        "note": (
+            "Keychain is only written when you save host credentials. "
+            "Mount/Test no longer update Keychain (session tokens use a local file)."
+        ),
+    }
+
+
+def fix_keychain() -> dict[str, Any]:
+    """Optional: open ACL on existing Keychain items. Prefer not needed after session-store fix.
+
+    Warning: each rewrite can prompt for the login password once. Avoid unless
+    reads are still prompting after restart.
+    """
+    result = keychain.reacl_all_host_secrets()
+    return result

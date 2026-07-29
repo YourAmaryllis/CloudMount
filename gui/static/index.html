@@ -36,7 +36,7 @@
         <button type="button" id="btn-add-mount" class="primary">Add mount…</button>
         <button type="button" id="btn-browse-add" class="primary">Browse remote &amp; add folders…</button>
       </div>
-      <p class="hint">Remote path can be a whole bucket or a subfolder (<code>bucket/subfolder</code>). Use browse to pick several folders at once.</p>
+      <p class="hint">Remote path is whatever comes after <code>host:</code> in rclone — optional. Empty mounts the whole remote; otherwise a path on that remote (folder, or for S3-compatible storage, bucket or bucket/folder).</p>
       <div id="mounts-empty" class="empty hidden">No mounts yet. Add a host first, then add a mount.</div>
       <table id="mounts-table" class="hidden">
         <thead>
@@ -112,8 +112,9 @@
       <label>Host
         <select name="host_id" required></select>
       </label>
-      <label>Remote path (bucket or bucket/folder)
-        <input name="remote_path" required placeholder="bucket/subfolder" />
+      <label>
+        <span id="remote-path-caption">Remote path (blank = root)</span>
+        <input name="remote_path" id="mount-remote-path" placeholder="leave blank for root, or folder/subfolder" />
         <button type="button" id="btn-lsd" class="linkish">Browse one level…</button>
       </label>
       <label>Local path <input name="path" required placeholder="~/CloudMount/my-folder" /></label>
@@ -133,7 +134,7 @@
       </label>
       <div id="mount-form-error" class="error"></div>
       <menu>
-        <button type="submit" value="cancel" class="secondary">Cancel</button>
+        <button type="button" id="mount-cancel" class="secondary">Cancel</button>
         <button type="submit" value="save" class="primary">Save</button>
       </menu>
     </form>
@@ -161,9 +162,9 @@
       </label>
       <label class="row">
         <input type="checkbox" id="browse-full-path" />
-        Keep path in label/local (e.g. ~/CloudMount/bucket/subfolder)
+        Keep path in label/local (e.g. ~/CloudMount/folder/subfolder)
       </label>
-      <p class="hint">Click a folder name to open it. Check boxes for folders to mount, then “Add selected as mounts”.</p>
+      <p class="hint">Root listing for this host (not only S3 buckets). Click a folder to open it. Check boxes, then “Add selected as mounts”. To mount the whole remote root, use Add mount and leave remote path blank.</p>
       <div id="browse-error" class="error"></div>
       <menu>
         <button type="button" id="browse-cancel" class="secondary">Close</button>
@@ -177,22 +178,18 @@
       <h2 id="dlg-host-title">Add host</h2>
       <input type="hidden" name="id" />
       <label>Name (rclone remote id)
-        <input name="name" required placeholder="wasabi" pattern="[A-Za-z0-9_-]+" />
+        <input name="name" required placeholder="my-remote" pattern="[A-Za-z0-9_-]+" />
       </label>
       <label>Type
-        <select name="type">
-          <option value="s3">S3 / Wasabi</option>
+        <select name="type" id="host-type" required>
+          <option value="">Loading backends…</option>
         </select>
       </label>
-      <label>Provider <input name="provider" value="Wasabi" /></label>
-      <label>Endpoint <input name="endpoint" value="https://s3.us-east-1.wasabisys.com" /></label>
-      <label>Region <input name="region" value="us-east-1" /></label>
-      <label>Access key <input name="access_key" autocomplete="off" /></label>
-      <label>Secret key <input name="secret_key" type="password" autocomplete="off" /></label>
-      <p class="hint">Keys are stored in macOS Keychain. Leave blank when editing to keep existing.</p>
+      <div id="host-dynamic-fields" class="host-dynamic"></div>
+      <p class="hint">All types come from your rclone binary. Password / key fields go to macOS Keychain; leave blank when editing to keep existing secrets.</p>
       <div id="host-form-error" class="error"></div>
       <menu>
-        <button type="submit" value="cancel" class="secondary">Cancel</button>
+        <button type="button" id="host-cancel" class="secondary">Cancel</button>
         <button type="submit" value="save" class="primary">Save</button>
       </menu>
     </form>

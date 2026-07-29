@@ -23,6 +23,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("setup", help="Download rclone, migrate, detect capabilities")
+    sub.add_parser(
+        "fix-keychain",
+        help="Rewrite Keychain secrets with open ACL (stops repeated password prompts)",
+    )
     sub.add_parser("status", help="JSON status")
     sub.add_parser("capabilities", help="Mount backend capabilities")
     s = sub.add_parser("prefs")
@@ -100,13 +104,20 @@ def main(argv: list[str] | None = None) -> int:
     mf = sub.add_parser("install-macfuse-help")
     mf.add_argument("--brew", action="store_true", help="Try brew install --cask macfuse")
 
+    sub.add_parser("backends", help="List rclone backend types")
+    bs = sub.add_parser("backend-schema", help="Config fields for a backend type")
+    bs.add_argument("type")
+
     args = p.parse_args(argv)
 
-    from core import api, capabilities, hosts, mounts
+    from core import api, backends, capabilities, hosts, mounts
     from core.rclone_bin import ensure_rclone
 
     if args.cmd == "setup":
         _j(api.setup())
+        return 0
+    if args.cmd == "fix-keychain":
+        _j(api.fix_keychain())
         return 0
     if args.cmd == "status":
         _j(api.status())
@@ -207,6 +218,12 @@ def main(argv: list[str] | None = None) -> int:
             _j(capabilities.try_brew_install_macfuse())
         else:
             _j(capabilities.help_install_macfuse(True))
+        return 0
+    if args.cmd == "backends":
+        _j(backends.backends_catalog())
+        return 0
+    if args.cmd == "backend-schema":
+        _j(backends.backend_schema(args.type))
         return 0
 
     p.print_help()

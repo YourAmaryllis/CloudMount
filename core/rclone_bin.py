@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.request import urlretrieve
 
-from .paths import ROOT, VENDOR_RCLONE, app_resources, ensure_dirs, LOG_DIR
+from .paths import BIN_DIR, LOG_DIR, VENDOR_RCLONE, app_resources, ensure_dirs
 
 
 def platform_key() -> str:
@@ -38,23 +38,65 @@ def _pkg_os_arch() -> tuple[str, str]:
     return pkg_os, arch
 
 
-def rclone_path() -> Path:
+def _binary_name() -> str:
+    return "rclone.exe" if platform_key().startswith("windows") else "rclone"
+
+
+def installed_rclone_path() -> Path:
+    """Writable install location (Application Support). Used for downloads."""
+    return BIN_DIR / platform_key() / _binary_name()
+
+
+def bundled_rclone_path() -> Optional[Path]:
+    """Optional read-only copy shipped inside the .app (or dev vendor/)."""
+    name = _binary_name()
     key = platform_key()
-    name = "rclone.exe" if key.startswith("windows") else "rclone"
-    # App bundle Resources first
     res = app_resources()
     if res:
-        p = res / "vendor" / "rclone" / key / name
-        if p.is_file():
-            return p
+        for p in (
+            res / "bin" / key / name,
+            res / "vendor" / "rclone" / key / name,
+            res / "wasabi" / "vendor" / "rclone" / key / name,
+        ):
+            if p.is_file():
+                return p
+    # Dev checkout seed only
     p = VENDOR_RCLONE / key / name
-    return p
+    if p.is_file():
+        return p
+    return None
+
+
+def rclone_path() -> Path:
+    """Path used to run rclone: prefer App Support install, else bundled."""
+    installed = installed_rclone_path()
+    if installed.is_file() and os.access(installed, os.X_OK):
+        return installed
+    bundled = bundled_rclone_path()
+    if bundled is not None:
+        return bundled
+    return installed  # default target for ensure_rclone download
 
 
 def ensure_rclone(force: bool = False, version: str = "current") -> Path:
+    """Ensure rclone exists under Application Support (download if needed).
+
+    DMG users: binary is never written into /Applications (may be read-only).
+    First run copies from the app bundle if present, otherwise downloads from
+    downloads.rclone.org into:
+      ~/Library/Application Support/YourAmaryllis/CloudMount/bin/<platform>/rclone
+    """
     ensure_dirs()
-    dest = rclone_path()
+    dest = installed_rclone_path()
     if dest.is_file() and os.access(dest, os.X_OK) and not force:
+        return dest
+
+    # Seed from bundled copy without re-downloading when possible
+    bundled = bundled_rclone_path()
+    if bundled is not None and bundled.is_file() and not force:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(bundled, dest)
+        dest.chmod(0o755)
         return dest
 
     pkg_os, arch = _pkg_os_arch()
@@ -64,7 +106,7 @@ def ensure_rclone(force: bool = False, version: str = "current") -> Path:
     with tempfile.TemporaryDirectory() as td:
         zpath = Path(td) / "rclone.zip"
         with open(log, "a") as lf:
-            lf.write(f"Downloading {url}\n")
+            lf.write(f"Downloading {url} -> {dest}\n")
         urlretrieve(url, zpath)
         with zipfile.ZipFile(zpath) as zf:
             zf.extractall(td)

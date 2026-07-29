@@ -1,0 +1,139 @@
+# Build CloudMount DMGs (Apple Silicon + Intel) and publish a GitHub Release
+# on this repository.
+#
+# Trigger:
+#   - Push a version tag:  git tag v0.0.1 && git push origin v0.0.1
+#   - Or Actions → Release DMG → Run workflow
+
+name: Release DMG
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without v prefix (empty = VERSION file or tag)"
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark GitHub Release as prerelease"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+          - os: macos-13
+            arch: amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            V="${{ github.event.inputs.version }}"
+            V="${V#v}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(tr -d '[:space:]' < VERSION)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "$V" > VERSION
+          echo "Building CloudMount v$V (${{ matrix.arch }})"
+          uname -m
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh bin/* plugins/*.sh 2>/dev/null || true
+
+      - name: Build DMG
+        env:
+          ARCH_SUFFIX: ${{ matrix.arch }}
+        run: ./scripts/build-dmg.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: dist/CloudMount-*-darwin-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-dmg
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            V="${{ github.event.inputs.version }}"
+            V="${V#v}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="0.0.1"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Download all DMGs
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dmg-*
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lh dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: CloudMount v${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          files: dist/CloudMount-*.dmg
+          fail_on_unmatched_files: true
+          body: |
+            ## CloudMount v${{ steps.ver.outputs.version }}
+
+            Open source under the [MIT License](https://github.com/${{ github.repository }}/blob/main/LICENSE).
+
+            ### Downloads
+            | File | Mac |
+            |------|-----|
+            | `CloudMount-${{ steps.ver.outputs.version }}-darwin-arm64.dmg` | Apple Silicon (M1/M2/M3/…) |
+            | `CloudMount-${{ steps.ver.outputs.version }}-darwin-amd64.dmg` | Intel |
+
+            ### Install
+            1. Download the DMG for your Mac
+            2. Open it → drag **CloudMount** to Applications
+            3. First launch: right-click → **Open** if Gatekeeper warns (**unsigned** build)
+            4. App downloads official rclone on first setup
+
+            ### Docs
+            - [README](https://github.com/${{ github.repository }}#readme)
+            - [Mount modes](https://github.com/${{ github.repository }}/blob/main/docs/MOUNT_MODES.md)
+
+            ### Notes
+            - Tested remotes: **Wasabi (S3)** and **Proton Drive** (other rclone types untested)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

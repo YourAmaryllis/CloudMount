@@ -57,7 +57,7 @@ function renderMounts() {
     tr.innerHTML = `
       <td>${esc(m.label)}</td>
       <td>${esc(m.host_name || m.host_id)}</td>
-      <td><code>${esc(m.remote_path)}</code></td>
+      <td><code>${esc(m.remote_path || "(root)")}</code></td>
       <td><code>${esc(m.path)}</code></td>
       <td>${esc(m.mount_kind || "nfs")}</td>
       <td class="${stClass}">${stText}</td>
@@ -179,7 +179,9 @@ async function doTestHost(id) {
     const r = await api("/api/host/test", { method: "POST", body: JSON.stringify({ id }) });
     if (!r.ok) throw new Error(r.error || "failed");
     toast(`OK — ${(r.buckets || []).length} top-level entries`);
-    alert(`Connection OK\n\nBuckets / folders:\n${(r.buckets || []).join("\n") || "(none)"}`);
+    alert(
+      `Connection OK\n\nTop-level folders:\n${(r.buckets || []).join("\n") || "(none / empty root)"}`
+    );
   } catch (e) {
     alert(String(e.message || e));
   }
@@ -190,6 +192,22 @@ function openPath(p) {
   toast(`Path: ${p} (open in Finder from menu bar or open ${p})`);
 }
 
+function updateRemotePathHint() {
+  const form = $("#form-mount");
+  if (!form) return;
+  const cap = $("#remote-path-caption");
+  const inp = $("#mount-remote-path");
+  // Generic for every backend: rclone path after "remote:" — bucket only for S3-like,
+  // folder path or empty root for everything else. Same field either way.
+  if (cap) {
+    cap.textContent =
+      "Path on remote (optional). Empty = entire remote root. For S3-compatible hosts use bucket or bucket/folder; for Drive/Proton/SFTP/etc. use a folder path or leave blank.";
+  }
+  if (inp) {
+    inp.placeholder = "empty = root · or path/on/remote";
+  }
+}
+
 function openMountDialog(m = null) {
   const dlg = $("#dlg-mount");
   const form = $("#form-mount");
@@ -198,7 +216,7 @@ function openMountDialog(m = null) {
   form.id.value = m?.id || "";
   form.label.value = m?.label || "";
   form.remote_path.value = m?.remote_path || "";
-  form.path.value = m?.path || "~/";
+  form.path.value = m?.path || "~/CloudMount/mount";
   form.mount_kind.value = m?.mount_kind || state?.prefs?.default_mount_kind || "nfs";
   form.vfs_cache_mode.value = m?.vfs_cache_mode || "full";
   const sel = form.host_id;
@@ -206,7 +224,7 @@ function openMountDialog(m = null) {
   for (const h of state.hosts || []) {
     const o = document.createElement("option");
     o.value = h.id;
-    o.textContent = `${h.name} (${h.provider || h.type})`;
+    o.textContent = `${h.name} (${h.type}${h.provider ? " / " + h.provider : ""})`;
     if (m && m.host_id === h.id) o.selected = true;
     sel.append(o);
   }
@@ -215,24 +233,250 @@ function openMountDialog(m = null) {
     return;
   }
   $("#mount-form-error").textContent = "";
-  dlg.showModal();
+  sel.onchange = updateRemotePathHint;
+  updateRemotePathHint();
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
 }
 
-function openHostDialog(h = null) {
+let backendsCache = null;
+let hostEditSnapshot = null; // options when editing
+
+async function loadBackends() {
+  if (backendsCache) return backendsCache;
+  const r = await api("/api/backends");
+  backendsCache = r.backends || [];
+  return backendsCache;
+}
+
+async function openHostDialog(h = null) {
   const dlg = $("#dlg-host");
   const form = $("#form-host");
   form.reset();
   $("#dlg-host-title").textContent = h ? "Edit host" : "Add host";
   form.id.value = h?.id || "";
-  form.name.value = h?.name || "wasabi";
-  form.type.value = h?.type || "s3";
-  form.provider.value = h?.provider || "Wasabi";
-  form.endpoint.value = h?.endpoint || "https://s3.us-east-1.wasabisys.com";
-  form.region.value = h?.region || "us-east-1";
-  form.access_key.value = "";
-  form.secret_key.value = "";
+  form.name.value = h?.name || "";
   $("#host-form-error").textContent = "";
-  dlg.showModal();
+  hostEditSnapshot = h ? { ...(h.options || {}), provider: h.provider, endpoint: h.endpoint, region: h.region } : {};
+
+  const typeSel = $("#host-type");
+  typeSel.innerHTML = "<option value=\"\">Loading…</option>";
+  try {
+    const list = await loadBackends();
+    typeSel.innerHTML = "";
+    for (const b of list) {
+      const o = document.createElement("option");
+      o.value = b.type;
+      o.textContent = `${b.type} — ${b.description || ""}`.slice(0, 80);
+      typeSel.append(o);
+    }
+    // Prefer s3 / Wasabi as default for new hosts
+    const want = h?.type || "s3";
+    if ([...typeSel.options].some((o) => o.value === want)) {
+      typeSel.value = want;
+    } else if (typeSel.options.length) {
+      typeSel.selectedIndex = 0;
+    }
+  } catch (e) {
+    typeSel.innerHTML = "<option value=\"s3\">s3</option>";
+    toast("Could not load full backend list");
+  }
+
+  await renderHostFields(typeSel.value, hostEditSnapshot);
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
+}
+
+/** Build dynamic option inputs from rclone backend schema */
+async function renderHostFields(typeName, existing = {}) {
+  const box = $("#host-dynamic-fields");
+  box.innerHTML = "<p class=\"hint\">Loading fields…</p>";
+  if (!typeName) {
+    box.innerHTML = "";
+    return;
+  }
+  try {
+    const schema = await api(`/api/backends/${encodeURIComponent(typeName)}`);
+    const all = schema.fields || [];
+    const byName = Object.fromEntries(all.map((f) => [f.name, f]));
+    // [] is truthy in JS — only use setup_fields when non-empty
+    let setup =
+      Array.isArray(schema.setup_fields) && schema.setup_fields.length
+        ? schema.setup_fields.slice()
+        : all.filter((f) => f.show_in_setup && !f.internal);
+    const advanced = (
+      Array.isArray(schema.advanced_fields) && schema.advanced_fields.length
+        ? schema.advanced_fields
+        : all.filter((f) => !f.internal && !f.show_in_setup)
+    ).filter((f) => !f.internal && f.name !== "2fa");
+
+    // Always show core auth fields when the backend defines them
+    const mustShow = [
+      "username",
+      "user",
+      "password",
+      "pass",
+      "otp_secret_key",
+      "mailbox_password",
+      "provider",
+      "access_key_id",
+      "secret_access_key",
+      "endpoint",
+      "region",
+      "host",
+      "port",
+    ];
+    for (const name of mustShow) {
+      if (byName[name] && !byName[name].internal && !setup.find((f) => f.name === name)) {
+        setup.push(byName[name]);
+      }
+    }
+    // Hide runtime / internal (6-digit 2fa code, client tokens, …)
+    setup = setup.filter((f) => f.name !== "2fa" && !f.internal);
+
+    const priority = [
+      "provider",
+      "username",
+      "user",
+      "password",
+      "pass",
+      "otp_secret_key",
+      "mailbox_password",
+      "env_auth",
+      "access_key_id",
+      "secret_access_key",
+      "endpoint",
+      "region",
+      "host",
+      "port",
+      "client_id",
+      "client_secret",
+      "service_account_file",
+      "scope",
+      "acl",
+    ];
+    const ordered = [];
+    for (const p of priority) {
+      const f = setup.find((x) => x.name === p);
+      if (f) ordered.push(f);
+    }
+    for (const f of setup) {
+      if (!priority.includes(f.name)) ordered.push(f);
+    }
+
+    box.innerHTML = "";
+    if (typeName === "protondrive") {
+      const tip = document.createElement("p");
+      tip.className = "hint";
+      tip.innerHTML =
+        "Proton Drive: enter <strong>username</strong>, <strong>password</strong>, and the long <strong>authenticator secret</strong> from 2FA setup " +
+        "(not the 6-digit codes). The changing 6-digit code is runtime-only and is not shown here.";
+      box.append(tip);
+    }
+
+    const appendField = (f, container) => {
+      if (!f || !f.name || f.internal || f.name === "2fa") return;
+      if (["alternate_export"].includes(f.name)) return;
+      const label = document.createElement("label");
+      label.dataset.field = f.name;
+      const title = (f.label || f.name) + (f.required ? " *" : "");
+      const val =
+        existing[f.name] !== undefined && existing[f.name] !== null
+          ? String(existing[f.name])
+          : "";
+      const isSecret = !!f.is_secret || !!f.is_password;
+      const examples = f.examples || [];
+
+      if (examples.length > 0 && examples.length < 80) {
+        label.append(document.createTextNode(title));
+        const sel = document.createElement("select");
+        sel.name = `opt_${f.name}`;
+        sel.dataset.opt = f.name;
+        sel.dataset.secret = isSecret ? "1" : "0";
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "—";
+        sel.append(blank);
+        for (const ex of examples) {
+          const o = document.createElement("option");
+          o.value = ex.value;
+          o.textContent = ex.help ? `${ex.value} — ${ex.help}` : ex.value;
+          if (val && val === ex.value) o.selected = true;
+          if (!val && f.name === "provider" && ex.value === "Wasabi" && !hostEditSnapshot?.id) {
+            o.selected = true;
+          }
+          sel.append(o);
+        }
+        label.append(sel);
+      } else if (f.type === "bool" || f.type === "boolean") {
+        label.className = "row";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.name = `opt_${f.name}`;
+        cb.dataset.opt = f.name;
+        cb.dataset.secret = "0";
+        cb.checked = val === "true" || val === "1" || val === true;
+        if (!val && f.name === "env_auth" && typeName === "s3") cb.checked = true;
+        label.append(cb);
+        label.append(document.createTextNode(" " + title));
+      } else {
+        label.append(document.createTextNode(title));
+        const inp = document.createElement("input");
+        inp.name = `opt_${f.name}`;
+        inp.dataset.opt = f.name;
+        inp.dataset.secret = isSecret ? "1" : "0";
+        inp.autocomplete = "off";
+        if (isSecret) {
+          inp.type = "password";
+          const editing = !!(hostEditSnapshot && Object.keys(hostEditSnapshot).length);
+          if (f.name === "otp_secret_key") {
+            inp.placeholder = editing
+              ? "(unchanged if blank — Keychain)"
+              : "Long secret from authenticator setup (not the 6-digit code)";
+          } else if (f.name === "password" || f.name === "pass" || f.name === "mailbox_password") {
+            inp.placeholder = editing ? "(unchanged if blank — Keychain)" : "";
+          } else {
+            inp.placeholder = editing ? "(unchanged if blank — Keychain)" : "";
+          }
+        } else {
+          inp.type = "text";
+          inp.value = val;
+          if (f.name === "endpoint" && typeName === "s3" && !val) {
+            inp.placeholder = "https://s3.us-east-1.wasabisys.com";
+          }
+          if (f.name === "region" && typeName === "s3" && !val) {
+            inp.placeholder = "us-east-1";
+          }
+        }
+        label.append(inp);
+      }
+      if (f.help && !String(f.help).toLowerCase().includes("internal use")) {
+        const help = document.createElement("div");
+        help.className = "field-help";
+        help.textContent = f.help.slice(0, 200);
+        label.append(help);
+      }
+      container.append(label);
+    };
+
+    for (const f of ordered) appendField(f, box);
+    // Advanced: non-internal only, collapsed
+    if (advanced.length) {
+      const det = document.createElement("details");
+      det.innerHTML = `<summary class="hint">Advanced options (${advanced.length})</summary>`;
+      const inner = document.createElement("div");
+      inner.className = "host-dynamic";
+      for (const f of advanced) appendField(f, inner);
+      det.append(inner);
+      box.append(det);
+    }
+    if (!ordered.length && !advanced.length) {
+      box.innerHTML =
+        "<p class=\"hint\">No setup fields from rclone for this type — save with name/type only, or check rclone docs.</p>";
+    }
+  } catch (e) {
+    box.innerHTML = `<p class="error">${esc(e.message || e)}</p>`;
+  }
 }
 
 function wire() {
@@ -297,10 +541,11 @@ function wire() {
 
   $("#form-mount").addEventListener("submit", async (ev) => {
     const form = ev.target;
-    if (ev.submitter?.value === "cancel") return;
     ev.preventDefault();
     const fd = new FormData(form);
     const body = Object.fromEntries(fd.entries());
+    // Allow empty remote_path (= remote root) for Drive / Proton / SFTP / etc.
+    body.remote_path = (body.remote_path || "").trim();
     try {
       await api("/api/mount", { method: "POST", body: JSON.stringify(body) });
       $("#dlg-mount").close();
@@ -311,18 +556,52 @@ function wire() {
     }
   });
 
+  $("#host-type")?.addEventListener("change", async (ev) => {
+    await renderHostFields(ev.target.value, hostEditSnapshot || {});
+  });
+  $("#host-cancel")?.addEventListener("click", () => {
+    $("#dlg-host")?.close();
+  });
+  $("#mount-cancel")?.addEventListener("click", () => {
+    $("#dlg-mount")?.close();
+  });
+
   $("#form-host").addEventListener("submit", async (ev) => {
     const form = ev.target;
-    if (ev.submitter?.value === "cancel") return;
     ev.preventDefault();
-    const fd = new FormData(form);
-    const body = Object.fromEntries(fd.entries());
-    if (!body.access_key) delete body.access_key;
-    if (!body.secret_key) delete body.secret_key;
+    const type = form.type.value;
+    const options = {};
+    const secrets = {};
+    for (const el of form.querySelectorAll("[data-opt]")) {
+      const name = el.dataset.opt;
+      const isSecret = el.dataset.secret === "1";
+      let val;
+      if (el.type === "checkbox") {
+        val = el.checked ? "true" : "false";
+      } else {
+        val = (el.value || "").trim();
+      }
+      if (val === "" || val === undefined) continue;
+      if (isSecret) secrets[name] = val;
+      else options[name] = val;
+    }
+    // Convenience aliases for s3
+    const body = {
+      id: form.id.value || undefined,
+      name: form.name.value,
+      type,
+      options,
+      secrets,
+      provider: options.provider,
+      endpoint: options.endpoint,
+      region: options.region,
+      access_key: secrets.access_key_id || secrets.access_key,
+      secret_key: secrets.secret_access_key || secrets.secret_key,
+    };
     try {
       await api("/api/host", { method: "POST", body: JSON.stringify(body) });
       $("#dlg-host").close();
-      toast("Host saved (Keychain)");
+      toast("Host saved");
       await refresh();
     } catch (e) {
       $("#host-form-error").textContent = String(e.message || e);
@@ -420,7 +699,9 @@ function openBrowseDialog() {
 async function browseLoad(prefix) {
   browseState.hostId = $("#browse-host").value;
   browseState.prefix = prefix || "";
-  $("#browse-prefix").textContent = browseState.prefix ? `/${browseState.prefix}` : "/ (buckets & roots)";
+  $("#browse-prefix").textContent = browseState.prefix
+    ? `/${browseState.prefix}`
+    : "/ (remote root)";
   $("#browse-error").textContent = "";
   const list = $("#browse-list");
   list.innerHTML = "<div class='browse-item'>Loading…</div>";

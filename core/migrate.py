@@ -85,5 +85,13 @@ def migrate_if_needed() -> dict[str, Any]:
     st["prefs"]["default_mount_kind"] = "nfs"
     save(st)
     write_rclone_conf()
+    # Scrub any secrets that landed in options (e.g. 2fa / otp) into Keychain
+    try:
+        from .hosts import scrub_secrets_from_state
+
+        scrub = scrub_secrets_from_state()
+        report["scrub"] = scrub
+    except Exception as e:
+        report["notes"].append(f"secret scrub: {e}")
     report["ok"] = True
     return report

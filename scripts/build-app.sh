@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assemble CloudMount.app (unsigned stub for local testing).
+# Assemble CloudMount.app (unsigned stub for local testing / CI).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist"
@@ -7,6 +7,7 @@ APP="$DIST/CloudMount.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
+VERSION="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null || echo "0.0.1")"
 
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RES"
@@ -18,6 +19,7 @@ rsync -a \
   --exclude 'logs' \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
+  --exclude '.github' \
   "$ROOT/" "$RES/wasabi/"
 
 # Launcher
@@ -42,7 +44,7 @@ LAUNCH
 chmod +x "$MACOS/CloudMount"
 
 # Info.plist
-cat >"$CONTENTS/Info.plist" <<'PLIST'
+cat >"$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -50,8 +52,8 @@ cat >"$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>CloudMount</string>
   <key>CFBundleDisplayName</key><string>CloudMount</string>
   <key>CFBundleIdentifier</key><string>com.youramaryllis.cloudmount</string>
-  <key>CFBundleVersion</key><string>0.2.0</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>${VERSION}</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleExecutable</key><string>CloudMount</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
@@ -60,12 +62,9 @@ cat >"$CONTENTS/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ensure rclone present for current arch at least
-"$ROOT/bin/cloudmount" setup >/dev/null 2>&1 || true
-if [[ -d "$ROOT/vendor/rclone" ]]; then
-  mkdir -p "$RES/wasabi/vendor"
-  rsync -a "$ROOT/vendor/rclone/" "$RES/wasabi/vendor/rclone/"
-fi
+# Do NOT bake rclone into the app by default — first run downloads into
+# ~/Library/Application Support/YourAmaryllis/CloudMount/bin/<platform>/
 
-echo "Built: $APP"
+echo "Built: $APP (v${VERSION})"
 echo "Run:   open \"$APP\""
+echo "Note: rclone downloads on first setup to Application Support (not into /Applications)."
