@@ -13,20 +13,15 @@ Any rclone backend can be configured in the UI. **Tested so far: Wasabi (S3) and
 - Secrets in **macOS Keychain** (saved when you edit a host)  
 - App data under Application Support  
 - Official rclone binary downloaded on first setup  
-- DMG install for **Apple Silicon** and **Intel** (currently unsigned)
+- DMG install (currently unsigned; one build works on Apple Silicon and Intel)
 
 ## Install (DMG)
 
-Download from [Releases](https://github.com/arthurtsang/CloudMount/releases):
-
-| File | Mac |
-|------|-----|
-| `CloudMount-*-darwin-arm64.dmg` | Apple Silicon |
-| `CloudMount-*-darwin-amd64.dmg` | Intel |
+Download `CloudMount-x.y.z.dmg` from [Releases](https://github.com/arthurtsang/CloudMount/releases).
 
 1. Open the DMG → drag **CloudMount** to Applications  
 2. First launch: **right-click → Open** if Gatekeeper warns (unsigned build)  
-3. On first run the app downloads official rclone into Application Support  
+3. On first run the app downloads official rclone for your Mac into Application Support  
 4. Browser UI opens → **Hosts** → add a remote → **Mounts** → mount  
 
 ## Quick start (from source)
@@ -41,7 +36,7 @@ Or build the app bundle / DMG:
 
 ```bash
 ./scripts/build-app.sh && open dist/CloudMount.app
-./scripts/build-dmg.sh   # → dist/CloudMount-<version>-darwin-<arch>.dmg
+./scripts/build-dmg.sh   # → dist/CloudMount-<version>.dmg
 ```
 
 ## UI

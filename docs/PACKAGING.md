@@ -2,9 +2,7 @@
 
 ## User install (recommended)
 
-1. Download the DMG for your Mac from [Releases](https://github.com/arthurtsang/CloudMount/releases)  
-   - **Apple Silicon:** `CloudMount-*-darwin-arm64.dmg`  
-   - **Intel:** `CloudMount-*-darwin-amd64.dmg`  
+1. Download `CloudMount-x.y.z.dmg` from [Releases](https://github.com/arthurtsang/CloudMount/releases)  
 2. Drag **CloudMount.app** to **Applications**  
 3. Open the app (right-click → **Open** if Gatekeeper warns — builds are unsigned for now)  
 4. Setup: rclone is downloaded if needed; check FUSE / NFS capabilities  
@@ -44,19 +42,12 @@ CloudMount.app/Contents/
 ```bash
 ./scripts/build-app.sh
 ./scripts/build-dmg.sh
-# ARCH_SUFFIX=arm64|amd64 optional; default from uname -m
+# → dist/CloudMount-<version>.dmg
 ```
 
 ## CI release
 
-[`.github/workflows/release-dmg.yml`](../.github/workflows/release-dmg.yml):
-
-| Runner | Arch | Artifact |
-|--------|------|----------|
-| `macos-14` | arm64 | `CloudMount-<ver>-darwin-arm64.dmg` |
-| `macos-13` | amd64 | `CloudMount-<ver>-darwin-amd64.dmg` |
-
-Both DMGs are attached to one GitHub Release on this repository (`GITHUB_TOKEN`).
+[`.github/workflows/release-dmg.yml`](../.github/workflows/release-dmg.yml) builds one DMG on `macos-14` and attaches it to a GitHub Release. The bundle is arch-agnostic (Python launcher; rclone is fetched for the user’s Mac on first setup).
 
 ## Code signing & notarization
 
