@@ -137,3 +137,4 @@ Version source: [`VERSION`](VERSION).
 - [Mount modes (FUSE vs NFS)](docs/MOUNT_MODES.md)  
 - [Windows](docs/WINDOWS.md)  
 - [Packaging & install notes](docs/PACKAGING.md)  
+- [Future enhancements](docs/FUTURE.md)  
