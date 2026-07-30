@@ -74,6 +74,11 @@ class Handler(BaseHTTPRequestHandler):
             type_name = path[len("/api/backends/") :].strip("/")
             _json_response(self, 200, backends.backend_schema(type_name))
             return
+        if path == "/api/aws/profiles":
+            from core import aws_auth
+
+            _json_response(self, 200, aws_auth.list_aws_profiles())
+            return
         _json_response(self, 404, {"error": "not found"})
 
     def do_POST(self) -> None:
@@ -122,6 +127,24 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/host/test":
                 _json_response(self, 200, hosts.test_host(body["id"]))
+                return
+            if path == "/api/host/aws-login":
+                # Force SSO login for a profile S3 host
+                from core import aws_auth
+
+                h = hosts.get_host(body.get("id") or "")
+                if not h:
+                    _json_response(self, 200, {"ok": False, "error": "Host not found"})
+                    return
+                profile = hosts.s3_profile_name(h) or (body.get("profile") or "").strip()
+                if not profile:
+                    _json_response(
+                        self,
+                        200,
+                        {"ok": False, "error": "No AWS profile on this host"},
+                    )
+                    return
+                _json_response(self, 200, aws_auth.sso_login(profile))
                 return
             if path == "/api/host/lsd":
                 _json_response(

@@ -4,16 +4,17 @@ Mount cloud storage with **rclone** — add hosts, pick folders, mount locally, 
 
 **License:** [MIT](LICENSE) · **Platforms:** macOS and Windows
 
-Any rclone backend can be configured in the UI. **Tested so far: Wasabi (S3) and Proton Drive.** Other types are untested.
+Any rclone backend can be configured in the UI. **Tested so far:** Wasabi (S3 static keys), **AWS S3 (profile / SSO)**, and Proton Drive. Other types are untested.
 
 ## Features
 
 - **macOS:** FUSE (`rclone mount` + macFUSE) and **NFS** (`rclone nfsmount`)  
 - **Windows:** `rclone mount` + **WinFsp**, plus a **system tray** icon (notification area)  
-- Hosts and mounts in a local web UI (`http://127.0.0.2:8765/`)  
-- Secrets in **Keychain** (macOS) or **Credential Manager** (Windows)  
+- Hosts and mounts in a local web UI (`http://127.0.0.1:8765/`)  
+- **S3:** static access keys **or** AWS shared **profile** (`~/.aws`) for SSO / IAM user keys / Roles Anywhere via `credential_process`  
+- Secrets in **Keychain** (macOS) or **Credential Manager** (Windows); profile mode uses the AWS CLI credential chain  
 - Official rclone binary downloaded on first setup  
-- macOS DMG (unsigned); Windows: run from source / tray script (see [docs/WINDOWS.md](docs/WINDOWS.md))
+- macOS DMG + Windows installer from [Releases](https://github.com/arthurtsang/CloudMount/releases)
 
 ## Install
 
@@ -72,8 +73,19 @@ Or run `bin\cloudmount-tray.bat`. Full notes: [docs/WINDOWS.md](docs/WINDOWS.md)
 | Tab | Purpose |
 |-----|---------|
 | **Mounts** | Mount / unmount, add paths, FUSE vs NFS |
-| **Hosts** | rclone remotes, credentials, Test connection |
-| **Setup** | Capabilities (macFUSE / nfsmount), preferences |
+| **Hosts** | rclone remotes, credentials / AWS profile, Test connection |
+| **Setup** | Capabilities (macFUSE / nfsmount / WinFsp), preferences |
+
+### S3 hosts (short)
+
+1. **Hosts → Add** → type **s3**  
+2. Auth: **Static keys** (Wasabi/IAM user) **or** **AWS profile** (name from `~/.aws`)  
+3. **Test** or **Browse remote** to list buckets/folders  
+4. Add mounts as usual  
+
+If an SSO session has expired, CloudMount runs `aws sso login` **only after** a failed Test/Browse/Mount (not on a timer). Manual **AWS login** is also available on profile hosts.
+
+Full detail: [docs/S3.md](docs/S3.md).
 
 ## CLI
 
@@ -91,15 +103,16 @@ python3 bin/cloudmount capabilities
 | What | macOS | Windows |
 |------|--------|---------|
 | State | `~/Library/Application Support/YourAmaryllis/CloudMount/` | `%LOCALAPPDATA%\YourAmaryllis\CloudMount\` |
-| Credentials | Keychain `com.youramaryllis.cloudmount` | Credential Manager |
+| Static secrets | Keychain `com.youramaryllis.cloudmount` | Credential Manager |
+| AWS profile mode | `~/.aws/config` + `credentials` (and SSO cache) | Same under `%USERPROFILE%\.aws` |
 | rclone binary | `…/bin/<platform>/rclone` | `…\bin\windows-*\rclone.exe` |
 
 ## Mount kinds
 
 | Kind | Command | Needs |
 |------|---------|--------|
-| **nfs** | `rclone nfsmount` | Official rclone |
-| **fuse** | `rclone mount` | Official rclone + [macFUSE](https://osxfuse.github.io/) |
+| **nfs** | `rclone nfsmount` | Official rclone (macOS) |
+| **fuse** | `rclone mount` | Official rclone + [macFUSE](https://osxfuse.github.io/) or [WinFsp](https://winfsp.dev/rel/) |
 
 See [docs/MOUNT_MODES.md](docs/MOUNT_MODES.md).
 
@@ -109,8 +122,8 @@ Push a version tag to build **macOS DMG + Windows installer** and publish a GitH
 
 ```bash
 # bump VERSION, commit, then:
-git tag v0.0.2
-git push origin v0.0.2
+git tag v0.0.3
+git push origin v0.0.3
 ```
 
 Or **Actions → Release → Run workflow**.  
@@ -120,6 +133,7 @@ Version source: [`VERSION`](VERSION).
 
 ## Docs
 
+- [S3 / AWS profile](docs/S3.md)  
 - [Mount modes (FUSE vs NFS)](docs/MOUNT_MODES.md)  
 - [Windows](docs/WINDOWS.md)  
 - [Packaging & install notes](docs/PACKAGING.md)  

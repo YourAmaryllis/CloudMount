@@ -207,6 +207,10 @@ def _parse_backend_help(text: str) -> dict[str, Any]:
         "pass": "Password",
         "port": "Port",
         "env_auth": "Use environment / runtime credentials",
+        "profile": "AWS shared config profile name",
+        "shared_credentials_file": "Path to AWS credentials file",
+        "session_token": "AWS session token (temporary keys)",
+        "role_arn": "IAM role ARN to assume",
     }
     for f in fields:
         n = (f.get("name") or "").lower()
@@ -240,6 +244,8 @@ def _parse_backend_help(text: str) -> dict[str, Any]:
                 "env_auth",
                 "access_key_id",
                 "secret_access_key",
+                "profile",
+                "shared_credentials_file",
                 "user",
                 "pass",
                 "host",
@@ -295,6 +301,26 @@ def _parse_backend_help(text: str) -> dict[str, Any]:
     }
 
 
+# S3: only these matter for day-to-day host setup (SSE/KMS/etc. work automatically).
+_S3_SETUP_NAMES = (
+    "provider",
+    "region",
+    "endpoint",
+    "access_key_id",
+    "secret_access_key",
+)
+# Optional rare knobs — collapsed under Advanced, not required for AWS profile mounts.
+_S3_ADVANCED_ALLOW = {
+    "acl",
+    "location_constraint",
+    "force_path_style",
+    "storage_class",
+    "server_side_encryption",
+    "sse_kms_key_id",
+    "shared_credentials_file",
+}
+
+
 def backend_schema(type_name: str, force: bool = False) -> dict[str, Any]:
     type_name = (type_name or "").strip()
     if not type_name:
@@ -307,19 +333,30 @@ def backend_schema(type_name: str, force: bool = False) -> dict[str, Any]:
     if r.returncode != 0 and "didn't find" in text.lower():
         return {"ok": False, "error": f"Unknown backend: {type_name}", "fields": [], "providers": []}
     parsed = _parse_backend_help(text)
+    fields = parsed["fields"]
+    setup_fields = parsed.get("setup_fields") or [
+        f for f in fields if f.get("show_in_setup") and not f.get("internal")
+    ]
+    advanced_fields = parsed.get("advanced_fields") or [
+        f for f in fields if not f.get("internal") and not f.get("show_in_setup")
+    ]
+
+    if type_name == "s3":
+        by_name = {f.get("name"): f for f in fields if f.get("name")}
+        setup_fields = [by_name[n] for n in _S3_SETUP_NAMES if n in by_name]
+        # Drop env_auth / profile from rclone list — CloudMount owns auth UI
+        advanced_fields = [
+            f
+            for f in fields
+            if f.get("name") in _S3_ADVANCED_ALLOW and not f.get("internal")
+        ]
+
     out = {
         "ok": True,
         "type": type_name,
-        "fields": parsed["fields"],
-        "setup_fields": parsed.get("setup_fields") or [
-            f for f in parsed["fields"] if f.get("show_in_setup") and not f.get("internal")
-        ],
-        "advanced_fields": parsed.get("advanced_fields")
-        or [
-            f
-            for f in parsed["fields"]
-            if not f.get("internal") and not f.get("show_in_setup")
-        ],
+        "fields": fields,
+        "setup_fields": setup_fields,
+        "advanced_fields": advanced_fields,
         "providers": parsed["providers"],
         "credential_fields": parsed["credential_fields"],
     }

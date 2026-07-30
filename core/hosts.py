@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-from . import keychain, session_store
+from . import aws_auth, keychain, session_store
 from .backends import backend_schema
 from .paths import RCLONE_CONF, RCLONE_RUNTIME_CONF
 from .rclone_bin import run_rclone
@@ -99,10 +99,16 @@ def write_rclone_conf() -> None:
                 opts["endpoint"] = h["endpoint"]
             if h.get("region") and "region" not in opts:
                 opts["region"] = h["region"]
-            # Prefer env_auth when we have Keychain AWS keys
-            if keychain.get_host_secret(h["id"], "access_key") or keychain.get_host_secret(
+            mode = s3_auth_mode(h)
+            if mode == "profile":
+                opts["env_auth"] = "true"
+                # Never leave static keys in conf for profile hosts
+                opts.pop("access_key_id", None)
+                opts.pop("secret_access_key", None)
+            elif keychain.get_host_secret(h["id"], "access_key") or keychain.get_host_secret(
                 h["id"], "access_key_id"
             ):
+                # Static keys → env_auth + AWS_* at runtime (not written into conf)
                 opts.setdefault("env_auth", "true")
 
         for k, v in opts.items():
@@ -110,6 +116,9 @@ def write_rclone_conf() -> None:
                 continue
             if _is_secret_field(str(k)):
                 continue  # never write secrets to disk (password, 2fa, otp, tokens, …)
+            # auth_mode is CloudMount-only (not an rclone option)
+            if str(k) == "auth_mode":
+                continue
             cp[section][str(k)] = str(v)
 
     RCLONE_CONF.parent.mkdir(parents=True, exist_ok=True)
@@ -166,16 +175,49 @@ def _remote_env_prefix(remote_name: str) -> str:
     return remote_name.upper().replace("-", "_")
 
 
+def s3_auth_mode(host: dict[str, Any]) -> str:
+    """Return ``profile`` or ``static`` for an S3 host."""
+    opts = host.get("options") or {}
+    mode = (opts.get("auth_mode") or "").strip().lower()
+    if mode in ("profile", "static"):
+        return mode
+    # Infer: profile option set without keys → profile
+    if opts.get("profile") and not (
+        keychain.get_host_secret(host["id"], "access_key")
+        or keychain.get_host_secret(host["id"], "access_key_id")
+    ):
+        return "profile"
+    # env_auth true and no keys
+    if str(opts.get("env_auth") or "").lower() in ("true", "1") and not (
+        keychain.get_host_secret(host["id"], "access_key")
+        or keychain.get_host_secret(host["id"], "access_key_id")
+    ):
+        return "profile"
+    return "static"
+
+
+def s3_profile_name(host: dict[str, Any]) -> str:
+    opts = host.get("options") or {}
+    return (opts.get("profile") or opts.get("aws_profile") or "").strip()
+
+
 def host_env(host_id: str) -> dict[str, str]:
-    """Env for rclone — primarily AWS keys for S3 env_auth.
+    """Env for rclone — AWS keys for static S3, or AWS_PROFILE for profile mode.
 
     Password-type backends (protondrive, etc.) get secrets via
-    write_runtime_conf() (obscured into a temp conf file). Env injection of
-    obscured passwords is unreliable for some backends.
+    write_runtime_conf() (obscured into a temp conf file).
     """
     env: dict[str, str] = {}
     h = get_host(host_id)
     if not h:
+        return env
+    t = (h.get("type") or "").lower()
+    if t == "s3" and s3_auth_mode(h) == "profile":
+        profile = s3_profile_name(h)
+        if profile:
+            env["AWS_PROFILE"] = profile
+            env["AWS_DEFAULT_PROFILE"] = profile
+        # Do not inject static keys over a profile session
         return env
     for field, env_name in (
         ("access_key", "AWS_ACCESS_KEY_ID"),
@@ -307,17 +349,77 @@ def ensure_host_runtime_secrets(host_id: str) -> Optional[str]:
                 "(the base32 key from 2FA setup, not a 6-digit code), then Test again"
             )
     elif t == "s3":
-        if not (
-            keychain.get_host_secret(host_id, "access_key")
-            or keychain.get_host_secret(host_id, "access_key_id")
-        ):
-            return "S3 access key missing in Keychain"
-        if not (
-            keychain.get_host_secret(host_id, "secret_key")
-            or keychain.get_host_secret(host_id, "secret_access_key")
-        ):
-            return "S3 secret key missing in Keychain"
+        mode = s3_auth_mode(h)
+        if mode == "profile":
+            if not s3_profile_name(h):
+                return (
+                    "S3 profile mode needs an AWS profile name "
+                    "(from ~/.aws/config or credentials)."
+                )
+        else:
+            if not (
+                keychain.get_host_secret(host_id, "access_key")
+                or keychain.get_host_secret(host_id, "access_key_id")
+            ):
+                return "S3 access key missing in Keychain (or switch host to Profile auth)"
+            if not (
+                keychain.get_host_secret(host_id, "secret_key")
+                or keychain.get_host_secret(host_id, "secret_access_key")
+            ):
+                return "S3 secret key missing in Keychain"
     return None
+
+
+def prepare_s3_host(host_id: str, *, try_login: bool = True) -> Optional[dict[str, Any]]:
+    """Deprecated name: only used for on-failure SSO refresh (not proactive).
+
+    Prefer :func:`refresh_s3_after_auth_failure`. Returns None if N/A or login OK,
+    or ``{ok: False, error: ...}`` if login failed.
+    """
+    return refresh_s3_after_auth_failure(host_id) if try_login else None
+
+
+def refresh_s3_after_auth_failure(host_id: str) -> Optional[dict[str, Any]]:
+    """Run ``aws sso login`` only after a failed rclone/AWS call (profile hosts).
+
+    We intentionally do **not** proactively refresh on every Test/Browse/Mount —
+    that would open a browser while the user is idle or just listing dirs.
+
+    Returns:
+      None — not a profile host, or login succeeded (caller should retry)
+      dict with ok=False — login failed / not applicable SSO
+    """
+    h = get_host(host_id)
+    if not h or (h.get("type") or "").lower() != "s3":
+        return None
+    if s3_auth_mode(h) != "profile":
+        return None
+    profile = s3_profile_name(h)
+    if not profile:
+        return {"ok": False, "error": "AWS profile name missing", "code": "aws_auth"}
+
+    login = aws_auth.sso_login(profile)
+    if login.get("ok"):
+        return None  # success → caller retries the operation
+    return {
+        "ok": False,
+        "error": login.get("error") or "AWS SSO login failed",
+        "aws_login_ran": True,
+        "code": "aws_auth",
+        "not_sso": login.get("not_sso"),
+    }
+
+
+def _format_s3_rclone_error(out: str, host: dict[str, Any]) -> str:
+    profile = s3_profile_name(host) if s3_auth_mode(host) == "profile" else ""
+    msg = aws_auth.friendly_aws_error(out, profile=profile)
+    if aws_auth.is_auth_failure(out) and s3_auth_mode(host) == "profile":
+        msg += (
+            f"\n\nTry: aws sso login --profile {profile or 'YOUR_PROFILE'}"
+            if profile
+            else "\n\nTry refreshing AWS credentials for this profile."
+        )
+    return msg
 
 
 def write_runtime_conf(host_ids: Optional[list[str]] = None) -> Path:
@@ -523,16 +625,94 @@ def upsert_host(
         if v:
             keychain.set_host_secret(host_id, k, v)
 
-    # env_auth for s3 when we have keys
-    if type_ == "s3" and (
-        keychain.get_host_secret(host_id, "access_key")
-        or keychain.get_host_secret(host_id, "access_key_id")
-    ):
-        existing["options"]["env_auth"] = "true"
+    # Normalize S3 auth mode + drop rclone noise options (SSE/bool flags/etc.)
+    if type_ == "s3":
+        mode = (existing["options"].get("auth_mode") or "").strip().lower()
+        if mode not in ("static", "profile"):
+            # Infer from what user submitted
+            if existing["options"].get("profile") and not (
+                keychain.get_host_secret(host_id, "access_key")
+                or keychain.get_host_secret(host_id, "access_key_id")
+                or sec.get("access_key")
+                or sec.get("access_key_id")
+            ):
+                mode = "profile"
+            else:
+                mode = "static"
+            existing["options"]["auth_mode"] = mode
+        if mode == "profile":
+            existing["options"]["env_auth"] = "true"
+            if not existing["options"].get("provider"):
+                existing["options"]["provider"] = "AWS"
+            existing["options"].pop("access_key_id", None)
+            existing["options"].pop("secret_access_key", None)
+        else:
+            if keychain.get_host_secret(host_id, "access_key") or keychain.get_host_secret(
+                host_id, "access_key_id"
+            ):
+                existing["options"]["env_auth"] = "true"
+        existing["options"] = _slim_s3_options(existing["options"], mode)
 
     save(st)
     write_rclone_conf()
     return existing
+
+
+# Options we keep for S3 hosts (everything else is rclone noise).
+_S3_OPTION_KEEP = frozenset(
+    {
+        "auth_mode",
+        "profile",
+        "provider",
+        "region",
+        "endpoint",
+        "env_auth",
+        "acl",
+        "location_constraint",
+        "force_path_style",
+        "storage_class",
+        "server_side_encryption",
+        "sse_kms_key_id",
+        "shared_credentials_file",
+    }
+)
+
+
+def _slim_s3_options(opts: dict[str, Any], mode: str) -> dict[str, Any]:
+    """Keep only useful S3 host options; drop default-false flags and clutter."""
+    out: dict[str, Any] = {}
+    for k, v in (opts or {}).items():
+        if k not in _S3_OPTION_KEEP:
+            continue
+        if v is None or str(v) == "":
+            continue
+        # Skip default false flags (user never meant to set these)
+        if str(v).lower() in ("false", "0", "no"):
+            continue
+        out[k] = v
+    out["auth_mode"] = mode
+    if mode == "profile":
+        out["env_auth"] = "true"
+        if not out.get("provider"):
+            out["provider"] = "AWS"
+    return out
+
+
+def scrub_s3_host_options() -> dict[str, Any]:
+    """One-shot: slim existing S3 host options in state (remove SSE/bool clutter)."""
+    st = load()
+    n = 0
+    for h in st.get("hosts") or []:
+        if (h.get("type") or "") != "s3":
+            continue
+        mode = s3_auth_mode(h)
+        before = dict(h.get("options") or {})
+        h["options"] = _slim_s3_options(before, mode)
+        if h["options"] != before:
+            n += 1
+    save(st)
+    write_rclone_conf()
+    return {"ok": True, "hosts_updated": n}
 
 
 def delete_host(host_id: str) -> None:
@@ -549,6 +729,14 @@ def delete_host(host_id: str) -> None:
     write_rclone_conf()
 
 
+def _run_lsd(host_id: str, remote_path: str) -> tuple[int, str, str, Any]:
+    """Return (rc, stdout, stderr, conf_path) for rclone lsd."""
+    conf = write_runtime_conf([host_id])
+    env = host_env(host_id)
+    r = run_rclone(["lsd", remote_path, "--max-depth", "1"], env=env, config=conf)
+    return r.returncode, r.stdout or "", r.stderr or "", conf
+
+
 def test_host(host_id: str) -> dict[str, Any]:
     h = get_host(host_id)
     if not h:
@@ -556,18 +744,38 @@ def test_host(host_id: str) -> dict[str, Any]:
     missing = ensure_host_runtime_secrets(host_id)
     if missing:
         return {"ok": False, "error": missing}
+
     try:
         conf = write_runtime_conf([host_id])
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}
+
     env = host_env(host_id)
-    r = run_rclone(
-        ["lsd", f"{h['name']}:", "--max-depth", "1"],
-        env=env,
-        config=conf,
-    )
+    remote = f"{h['name']}:"
+    r = run_rclone(["lsd", remote, "--max-depth", "1"], env=env, config=conf)
     out = (r.stdout or "") + (r.stderr or "")
+
+    # On auth failure only: try SSO login once, then retry (no proactive refresh)
+    if r.returncode != 0 and (h.get("type") or "").lower() == "s3" and aws_auth.is_auth_failure(out):
+        login = refresh_s3_after_auth_failure(host_id)
+        if login is None:
+            conf = write_runtime_conf([host_id])
+            r = run_rclone(
+                ["lsd", remote, "--max-depth", "1"],
+                env=host_env(host_id),
+                config=conf,
+            )
+            out = (r.stdout or "") + (r.stderr or "")
+        elif login.get("ok") is False and not login.get("not_sso"):
+            return login
+
     if r.returncode != 0:
+        if (h.get("type") or "").lower() == "s3":
+            return {
+                "ok": False,
+                "error": _format_s3_rclone_error(out, h),
+                "code": "s3_error",
+            }
         hint = ""
         low = out.lower()
         if "2fa" in low or "incorrect login" in low or "8002" in out:
@@ -594,17 +802,19 @@ def test_host(host_id: str) -> dict[str, Any]:
         "buckets": buckets,
         "raw": (r.stdout or "")[:2000],
         "session_tokens_saved": tokens,
+        "auth_mode": s3_auth_mode(h) if (h.get("type") or "").lower() == "s3" else None,
     }
 
 
 def list_remote_paths(host_id: str, prefix: str = "") -> dict[str, Any]:
-    """List directories under host:prefix."""
+    """List directories under host:prefix (buckets at root for S3)."""
     h = get_host(host_id)
     if not h:
         return {"ok": False, "error": "Host not found"}
     missing = ensure_host_runtime_secrets(host_id)
     if missing:
         return {"ok": False, "error": missing}
+
     try:
         conf = write_runtime_conf([host_id])
     except RuntimeError as e:
@@ -612,8 +822,21 @@ def list_remote_paths(host_id: str, prefix: str = "") -> dict[str, Any]:
     prefix = (prefix or "").strip().strip("/")
     path = f"{h['name']}:{prefix}" if prefix else f"{h['name']}:"
     r = run_rclone(["lsd", path], env=host_env(host_id), config=conf)
+    out = (r.stderr or "") + (r.stdout or "")
+    # On auth failure only: SSO login + one retry
+    if r.returncode != 0 and (h.get("type") or "").lower() == "s3" and aws_auth.is_auth_failure(out):
+        login = refresh_s3_after_auth_failure(host_id)
+        if login is None:
+            conf = write_runtime_conf([host_id])
+            r = run_rclone(["lsd", path], env=host_env(host_id), config=conf)
+            out = (r.stderr or "") + (r.stdout or "")
+        elif login.get("ok") is False and not login.get("not_sso"):
+            return login
     if r.returncode != 0:
-        return {"ok": False, "error": (r.stderr or r.stdout or "")[-1500:]}
+        err = out[-1500:] or f"exit {r.returncode}"
+        if (h.get("type") or "").lower() == "s3":
+            err = _format_s3_rclone_error(out, h)
+        return {"ok": False, "error": err, "code": "list_failed"}
     capture_session_tokens(host_id, conf)
     entries = []
     for line in (r.stdout or "").splitlines():

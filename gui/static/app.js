@@ -90,14 +90,25 @@ function renderHosts() {
   table.classList.remove("hidden");
   for (const h of list) {
     const tr = document.createElement("tr");
+    let authLabel = h.has_secrets ? "creds ✓" : "missing";
+    if (h.type === "s3" && h.auth_mode === "profile") {
+      authLabel = h.aws_profile ? `profile: ${h.aws_profile}` : "profile (unset)";
+    } else if (h.type === "s3") {
+      authLabel = h.has_secrets ? "static keys ✓" : "keys missing";
+    } else if (h.has_secrets) {
+      authLabel = "Keychain ✓";
+    }
     tr.innerHTML = `
       <td><code>${esc(h.name)}</code></td>
       <td>${esc(h.type)} / ${esc(h.provider || "")}</td>
-      <td>${esc(h.endpoint || "")}</td>
-      <td>${h.has_secrets ? "Keychain ✓" : "missing"}</td>
+      <td>${esc(h.endpoint || h.aws_profile || "")}</td>
+      <td>${esc(authLabel)}</td>
       <td class="actions"></td>`;
     const actions = tr.querySelector(".actions");
     actions.append(btn("Test", () => doTestHost(h.id)));
+    if (h.type === "s3" && h.auth_mode === "profile") {
+      actions.append(btn("AWS login", () => doAwsLogin(h.id), "secondary"));
+    }
     actions.append(btn("Edit", () => openHostDialog(h), "secondary"));
     actions.append(btn("Remove", () => doRemoveHost(h.id), "secondary"));
     tb.append(tr);
@@ -178,10 +189,27 @@ async function doTestHost(id) {
   try {
     const r = await api("/api/host/test", { method: "POST", body: JSON.stringify({ id }) });
     if (!r.ok) throw new Error(r.error || "failed");
-    toast(`OK — ${(r.buckets || []).length} top-level entries`);
+    const n = (r.buckets || []).length;
+    toast(`OK — ${n} top-level entries`);
     alert(
-      `Connection OK\n\nTop-level folders:\n${(r.buckets || []).join("\n") || "(none / empty root)"}`
+      `Connection OK${r.auth_mode === "profile" ? " (AWS profile)" : ""}\n\n` +
+        `Top-level folders / buckets:\n${(r.buckets || []).join("\n") || "(none / empty root)"}`
     );
+  } catch (e) {
+    alert(String(e.message || e));
+  }
+}
+
+async function doAwsLogin(id) {
+  toast("Starting aws sso login…");
+  try {
+    const r = await api("/api/host/aws-login", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    });
+    if (!r.ok) throw new Error(r.error || "login failed");
+    toast("AWS login OK");
+    alert(r.message || "SSO login succeeded. Try Test or Browse again.");
   } catch (e) {
     alert(String(e.message || e));
   }
@@ -374,6 +402,130 @@ async function renderHostFields(typeName, existing = {}) {
       box.append(tip);
     }
 
+    // S3: static keys vs AWS profile (SSO / Roles Anywhere / shared credentials)
+    let s3AuthMode = "static";
+    if (existing.auth_mode === "profile" || existing.auth_mode === "static") {
+      s3AuthMode = existing.auth_mode;
+    } else if (existing.profile && !existing.access_key_id) {
+      s3AuthMode = "profile";
+    }
+    if (typeName === "s3") {
+      const tip = document.createElement("p");
+      tip.className = "hint";
+      tip.innerHTML =
+        "S3: use <strong>static keys</strong> (Wasabi / IAM user) or an <strong>AWS profile</strong> " +
+        "from <code>~/.aws</code> (SSO after <code>aws sso login</code>, static keys, or Roles Anywhere via credential_process).";
+      box.append(tip);
+
+      const modeLab = document.createElement("label");
+      modeLab.append(document.createTextNode("Auth mode"));
+      const modeSel = document.createElement("select");
+      modeSel.name = "opt_auth_mode";
+      modeSel.dataset.opt = "auth_mode";
+      modeSel.dataset.secret = "0";
+      modeSel.innerHTML = `
+        <option value="static">Static access key + secret</option>
+        <option value="profile">AWS profile (~/.aws)</option>`;
+      modeSel.value = s3AuthMode;
+      modeLab.append(modeSel);
+      box.append(modeLab);
+
+      // Profile picker (filled async)
+      const profLab = document.createElement("label");
+      profLab.dataset.s3Mode = "profile";
+      profLab.append(document.createTextNode("AWS profile"));
+      const profSel = document.createElement("select");
+      profSel.name = "opt_profile";
+      profSel.dataset.opt = "profile";
+      profSel.dataset.secret = "0";
+      const curProf = existing.profile || "";
+      profSel.innerHTML = `<option value="">Loading profiles…</option>`;
+      profLab.append(profSel);
+      const profHelp = document.createElement("div");
+      profHelp.className = "field-help";
+      profHelp.textContent =
+        "Profiles from ~/.aws/config and credentials. SSO profiles refresh via Test / AWS login.";
+      profLab.append(profHelp);
+      box.append(profLab);
+
+      const refreshS3Mode = () => {
+        s3AuthMode = modeSel.value;
+        const showProfile = s3AuthMode === "profile";
+        for (const el of box.querySelectorAll("[data-s3-mode]")) {
+          el.style.display = el.dataset.s3Mode === s3AuthMode ? "" : "none";
+        }
+        // Hide static key fields in profile mode
+        for (const name of ["access_key_id", "secret_access_key", "env_auth"]) {
+          const lab = box.querySelector(`label[data-field="${name}"]`);
+          if (lab) lab.style.display = showProfile ? "none" : "";
+        }
+        // Hide profile in static mode
+        profLab.style.display = showProfile ? "" : "none";
+      };
+      modeSel.addEventListener("change", refreshS3Mode);
+
+      // Load profiles
+      api("/api/aws/profiles")
+        .then((r) => {
+          const names = r.profiles || [];
+          profSel.innerHTML = "";
+          const blank = document.createElement("option");
+          blank.value = "";
+          blank.textContent = names.length ? "— select profile —" : "— no profiles found —";
+          profSel.append(blank);
+          for (const n of names) {
+            const o = document.createElement("option");
+            o.value = n;
+            o.textContent = n;
+            if (curProf === n) o.selected = true;
+            profSel.append(o);
+          }
+          if (curProf && !names.includes(curProf)) {
+            const o = document.createElement("option");
+            o.value = curProf;
+            o.textContent = `${curProf} (custom)`;
+            o.selected = true;
+            profSel.append(o);
+          }
+          // Allow typing custom profile
+          const custom = document.createElement("input");
+          custom.type = "text";
+          custom.placeholder = "Or type a profile name";
+          custom.dataset.opt = "profile";
+          custom.dataset.secret = "0";
+          custom.dataset.s3Mode = "profile";
+          custom.addEventListener("input", () => {
+            if (custom.value.trim()) {
+              profSel.value = "";
+              profSel.dataset.opt = ""; // disable select so form prefers text
+              custom.dataset.opt = "profile";
+            } else {
+              custom.dataset.opt = "";
+              profSel.dataset.opt = "profile";
+            }
+          });
+          profLab.append(custom);
+        })
+        .catch(() => {
+          profSel.innerHTML = "";
+          const o = document.createElement("option");
+          o.value = curProf;
+          o.textContent = curProf || "— enter profile below —";
+          profSel.append(o);
+          const inp = document.createElement("input");
+          inp.type = "text";
+          inp.dataset.opt = "profile";
+          inp.dataset.secret = "0";
+          inp.value = curProf;
+          inp.placeholder = "e.g. default, work-sso";
+          profLab.append(inp);
+        });
+
+      // apply mode visibility after fields render — use setTimeout 0
+      setTimeout(refreshS3Mode, 0);
+      modeSel.addEventListener("change", () => setTimeout(refreshS3Mode, 0));
+    }
+
     const appendField = (f, container) => {
       if (!f || !f.name || f.internal || f.name === "2fa") return;
       if (["alternate_export"].includes(f.name)) return;
@@ -402,8 +554,17 @@ async function renderHostFields(typeName, existing = {}) {
           o.value = ex.value;
           o.textContent = ex.help ? `${ex.value} — ${ex.help}` : ex.value;
           if (val && val === ex.value) o.selected = true;
-          if (!val && f.name === "provider" && ex.value === "Wasabi" && !hostEditSnapshot?.id) {
-            o.selected = true;
+          if (
+            !val &&
+            f.name === "provider" &&
+            !hostEditSnapshot?.id
+          ) {
+            // Prefer Wasabi for static keys; AWS when using a profile
+            if (typeName === "s3" && s3AuthMode === "profile" && ex.value === "AWS") {
+              o.selected = true;
+            } else if (typeName === "s3" && s3AuthMode !== "profile" && ex.value === "Wasabi") {
+              o.selected = true;
+            }
           }
           sel.append(o);
         }
@@ -442,7 +603,7 @@ async function renderHostFields(typeName, existing = {}) {
           inp.type = "text";
           inp.value = val;
           if (f.name === "endpoint" && typeName === "s3" && !val) {
-            inp.placeholder = "https://s3.us-east-1.wasabisys.com";
+            inp.placeholder = "optional for AWS; required for Wasabi etc.";
           }
           if (f.name === "region" && typeName === "s3" && !val) {
             inp.placeholder = "us-east-1";
@@ -456,23 +617,40 @@ async function renderHostFields(typeName, existing = {}) {
         help.textContent = f.help.slice(0, 200);
         label.append(help);
       }
+      // Mark S3 key fields so auth mode can hide them
+      if (typeName === "s3" && ["access_key_id", "secret_access_key", "env_auth"].includes(f.name)) {
+        label.dataset.s3Mode = "static";
+      }
       container.append(label);
     };
 
-    for (const f of ordered) appendField(f, box);
+    // Skip rclone profile/env_auth duplicates when we inject CloudMount auth UI
+    const skipS3 = typeName === "s3" ? new Set(["profile", "shared_credentials_file"]) : new Set();
+    for (const f of ordered) {
+      if (skipS3.has(f.name)) continue;
+      appendField(f, box);
+    }
     // Advanced: non-internal only, collapsed
     if (advanced.length) {
       const det = document.createElement("details");
       det.innerHTML = `<summary class="hint">Advanced options (${advanced.length})</summary>`;
       const inner = document.createElement("div");
       inner.className = "host-dynamic";
-      for (const f of advanced) appendField(f, inner);
+      for (const f of advanced) {
+        if (skipS3.has(f.name)) continue;
+        appendField(f, inner);
+      }
       det.append(inner);
       box.append(det);
     }
-    if (!ordered.length && !advanced.length) {
+    if (!ordered.length && !advanced.length && typeName !== "s3") {
       box.innerHTML =
         "<p class=\"hint\">No setup fields from rclone for this type — save with name/type only, or check rclone docs.</p>";
+    }
+    // Re-apply S3 mode visibility after all labels exist
+    if (typeName === "s3") {
+      const modeSel = box.querySelector('select[data-opt="auth_mode"]');
+      if (modeSel) modeSel.dispatchEvent(new Event("change"));
     }
   } catch (e) {
     box.innerHTML = `<p class="error">${esc(e.message || e)}</p>`;
@@ -574,16 +752,58 @@ function wire() {
     const secrets = {};
     for (const el of form.querySelectorAll("[data-opt]")) {
       const name = el.dataset.opt;
+      if (!name) continue;
+      // Skip fields hidden for the other S3 auth mode
+      const lab = el.closest("label");
+      if (lab && lab.style.display === "none") continue;
+      if (el.style && el.style.display === "none") continue;
       const isSecret = el.dataset.secret === "1";
       let val;
       if (el.type === "checkbox") {
-        val = el.checked ? "true" : "false";
+        // Only persist checked boxes (avoid flooding options with "false")
+        if (!el.checked) continue;
+        val = "true";
       } else {
         val = (el.value || "").trim();
       }
       if (val === "" || val === undefined) continue;
       if (isSecret) secrets[name] = val;
       else options[name] = val;
+    }
+    // S3: only keep useful options (no SSE/object-lock noise)
+    if (type === "s3") {
+      const keep = new Set([
+        "auth_mode",
+        "profile",
+        "provider",
+        "region",
+        "endpoint",
+        "env_auth",
+        "acl",
+        "location_constraint",
+        "force_path_style",
+        "storage_class",
+        "server_side_encryption",
+        "sse_kms_key_id",
+        "shared_credentials_file",
+      ]);
+      for (const k of Object.keys(options)) {
+        if (!keep.has(k)) delete options[k];
+      }
+    }
+    // Prefer last profile value if both select and text filled
+    if (options.profile === "" || options.profile === undefined) {
+      const customProf = form.querySelector('input[data-opt="profile"]');
+      if (customProf && customProf.value.trim()) options.profile = customProf.value.trim();
+    }
+    if (options.auth_mode === "profile") {
+      // Don't send empty static keys as secrets
+      delete secrets.access_key_id;
+      delete secrets.secret_access_key;
+      delete secrets.access_key;
+      delete secrets.secret_key;
+      options.env_auth = "true";
+      if (!options.provider) options.provider = "AWS";
     }
     // Convenience aliases for s3
     const body = {
@@ -595,8 +815,14 @@ function wire() {
       provider: options.provider,
       endpoint: options.endpoint,
       region: options.region,
-      access_key: secrets.access_key_id || secrets.access_key,
-      secret_key: secrets.secret_access_key || secrets.secret_key,
+      access_key:
+        options.auth_mode === "profile"
+          ? undefined
+          : secrets.access_key_id || secrets.access_key,
+      secret_key:
+        options.auth_mode === "profile"
+          ? undefined
+          : secrets.secret_access_key || secrets.secret_key,
     };
     try {
       await api("/api/host", { method: "POST", body: JSON.stringify(body) });
@@ -716,7 +942,12 @@ async function browseLoad(prefix) {
     list.innerHTML = "";
     const entries = r.entries || [];
     if (!entries.length) {
-      list.innerHTML = "<div class='browse-item'>No folders here</div>";
+      list.innerHTML =
+        "<div class='browse-item'>No folders here" +
+        (browseState.prefix
+          ? ""
+          : " (empty root, or ListBuckets denied — try a known bucket path)") +
+        "</div>";
       return;
     }
     for (const e of entries) {
@@ -745,8 +976,10 @@ async function browseLoad(prefix) {
       list.append(row);
     }
   } catch (e) {
-    list.innerHTML = "";
-    $("#browse-error").textContent = String(e.message || e);
+    list.innerHTML = "<div class='browse-item' style='opacity:0.7'>Could not list this path</div>";
+    const msg = String(e.message || e);
+    $("#browse-error").textContent = msg;
+    // Keep error visible; user can AWS login / fix IAM and retry Refresh-like navigation
   }
 }
 

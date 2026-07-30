@@ -38,6 +38,16 @@ NFS mode is disabled; rclone’s `nfsmount` is not used.
 
 Default local folder: `~\CloudMount\…` under your user profile.
 
+## AWS S3 with a profile
+
+Same as macOS: Hosts → s3 → **Auth mode: AWS profile**, pick a profile from `%USERPROFILE%\.aws`.
+
+- Install [AWS CLI v2](https://aws.amazon.com/cli/) if you use SSO (`aws sso login`).  
+- SSO re-login runs only when Test/Browse/Mount fails with an expired session (or use **AWS login** on the host).  
+- Static Wasabi/IAM keys still work via **Static access key + secret**.
+
+See [S3.md](./S3.md).
+
 ## Secrets
 
 Stored in **Windows Credential Manager** (target names under `com.youramaryllis.cloudmount/…`), not plain files.

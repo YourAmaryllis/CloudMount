@@ -28,6 +28,16 @@ def status() -> dict[str, Any]:
                 "endpoint": h.get("endpoint") or (h.get("options") or {}).get("endpoint"),
                 "region": h.get("region") or (h.get("options") or {}).get("region"),
                 "options": h.get("options") or {},
+                "auth_mode": (
+                    hosts.s3_auth_mode(h)
+                    if (h.get("type") or "") == "s3"
+                    else None
+                ),
+                "aws_profile": (
+                    hosts.s3_profile_name(h)
+                    if (h.get("type") or "") == "s3"
+                    else None
+                ),
                 # One Keychain probe per host (cached in-process) — avoid a
                 # storm of security(1) calls on every status refresh.
                 "has_secrets": bool(
@@ -35,6 +45,11 @@ def status() -> dict[str, Any]:
                     or keychain.get_host_secret(h["id"], "access_key")
                     or keychain.get_host_secret(h["id"], "access_key_id")
                     or keychain.get_host_secret(h["id"], "token")
+                    or (
+                        (h.get("type") or "") == "s3"
+                        and hosts.s3_auth_mode(h) == "profile"
+                        and hosts.s3_profile_name(h)
+                    )
                 ),
             }
             for h in hlist
@@ -88,9 +103,11 @@ def setup() -> dict[str, Any]:
     mig = migrate.migrate_if_needed()
     scrub = {}
     try:
-        from .hosts import scrub_secrets_from_state
+        from .hosts import scrub_s3_host_options, scrub_secrets_from_state
 
         scrub = scrub_secrets_from_state()
+        scrub_s3 = scrub_s3_host_options()
+        scrub = {**scrub, "s3_options": scrub_s3}
     except Exception as e:
         scrub = {"ok": False, "error": str(e)}
     caps = capabilities.report()

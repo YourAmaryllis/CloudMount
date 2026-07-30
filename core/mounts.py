@@ -357,58 +357,60 @@ def mount(mount_id: str) -> dict[str, Any]:
         return {"ok": False, "error": missing}
 
     write_rclone_conf()
-    # Runtime conf injects Keychain secrets as obscured values (needed for Proton Drive)
+
+    def _start_rclone(runtime_conf: Path) -> subprocess.Popen:
+        path.mkdir(parents=True, exist_ok=True)
+        remote = _remote_spec(m)
+        env = host_env(m["host_id"])
+        bin_path = rclone_path()
+        mode = m.get("vfs_cache_mode") or "full"
+        cmd = [
+            str(bin_path),
+            "--config",
+            str(runtime_conf),
+            cmd_name,
+            remote,
+            str(path),
+            "--vfs-cache-mode",
+            mode,
+            "--dir-cache-time",
+            "5m",
+            "--poll-interval",
+            "1m",
+        ]
+        full_env = os.environ.copy()
+        full_env.update(env)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        logf = open(log, "a", buffering=1)
+        logf.write(f"\n--- starting {cmd_name} {remote} -> {path}\n")
+        logf.write(f"config={runtime_conf}\n")
+        popen_kw: dict[str, Any] = {
+            "stdout": logf,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "env": full_env,
+        }
+        if is_windows():
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            popen_kw["creationflags"] = flags
+            popen_kw["close_fds"] = False
+        else:
+            popen_kw["start_new_session"] = True
+            popen_kw["close_fds"] = True
+        return subprocess.Popen(cmd, **popen_kw)
+
+    log = LOG_DIR / f"{mount_id}.log"
     try:
         runtime_conf = write_runtime_conf([m["host_id"]])
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}
-    path.mkdir(parents=True, exist_ok=True)
+
     remote = _remote_spec(m)
-    env = host_env(m["host_id"])
-    bin_path = rclone_path()
-    log = LOG_DIR / f"{mount_id}.log"
-    mode = m.get("vfs_cache_mode") or "full"
+    proc = _start_rclone(runtime_conf)
+    retried_sso = False
 
-    cmd = [
-        str(bin_path),
-        "--config",
-        str(runtime_conf),
-        cmd_name,
-        remote,
-        str(path),
-        "--vfs-cache-mode",
-        mode,
-        "--dir-cache-time",
-        "5m",
-        "--poll-interval",
-        "1m",
-    ]
-    full_env = os.environ.copy()
-    full_env.update(env)
-
-    log.parent.mkdir(parents=True, exist_ok=True)
-    logf = open(log, "a", buffering=1)
-    logf.write(f"\n--- starting {cmd_name} {remote} -> {path}\n")
-    logf.write(f"config={runtime_conf}\n")
-    popen_kw: dict[str, Any] = {
-        "stdout": logf,
-        "stderr": subprocess.STDOUT,
-        "stdin": subprocess.DEVNULL,
-        "env": full_env,
-    }
-    if is_windows():
-        # Hide console window; new process group for clean kill
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        popen_kw["creationflags"] = flags
-        popen_kw["close_fds"] = False
-    else:
-        popen_kw["start_new_session"] = True
-        popen_kw["close_fds"] = True
-    proc = subprocess.Popen(cmd, **popen_kw)
-
-    def _ok_payload() -> dict[str, Any]:
-        # rclone may have written client_* session tokens into the conf
+    def _ok_payload(p: subprocess.Popen) -> dict[str, Any]:
         try:
             capture_session_tokens(m["host_id"], runtime_conf)
         except Exception:
@@ -417,37 +419,61 @@ def mount(mount_id: str) -> dict[str, Any]:
             "ok": True,
             "path": str(path),
             "kind": kind,
-            "pid": proc.pid,
+            "pid": p.pid,
             "remote": remote,
         }
 
+    def _fail_hints(tail: str) -> str:
+        hint = ""
+        low = tail.lower()
+        if "2fa" in low or "incorrect login" in low or "8002" in tail:
+            hint = (
+                "\n\nProton 2FA/login failed. Click Test on the host first. "
+                "Use the Authenticator secret key (base32), not a 6-digit code. "
+                "Re-enter password if needed."
+            )
+        if "input too short" in low or "obscured" in low:
+            hint = (
+                "\n\nPassword was not rclone-obscured. Re-save the host, "
+                "then Test, then Mount."
+            )
+        return hint
+
     for _ in range(40):
         if is_mounted(str(path)):
-            return _ok_payload()
+            return _ok_payload(proc)
         if proc.poll() is not None:
             tail = log.read_text()[-2000:] if log.exists() else ""
-            hint = ""
-            low = tail.lower()
-            if "2fa" in low or "incorrect login" in low or "8002" in tail:
-                hint = (
-                    "\n\nProton 2FA/login failed. Click Test on the host first. "
-                    "Use the Authenticator secret key (base32), not a 6-digit code. "
-                    "Re-enter password if needed."
-                )
-            if "input too short" in low or "obscured" in low:
-                hint = (
-                    "\n\nPassword was not rclone-obscured. Re-save the host, "
-                    "then Test, then Mount."
-                )
+            # Auth failure on profile S3 → SSO login once, then remount
+            if not retried_sso:
+                try:
+                    from . import aws_auth
+                    from .hosts import refresh_s3_after_auth_failure
+
+                    if aws_auth.is_auth_failure(tail):
+                        login = refresh_s3_after_auth_failure(m["host_id"])
+                        if login is None:
+                            retried_sso = True
+                            runtime_conf = write_runtime_conf([m["host_id"]])
+                            proc = _start_rclone(runtime_conf)
+                            continue
+                        if login.get("ok") is False and not login.get("not_sso"):
+                            return {
+                                "ok": False,
+                                "error": login.get("error") or "AWS SSO login failed",
+                                "log": str(log),
+                            }
+                except Exception:
+                    pass
             return {
                 "ok": False,
-                "error": f"rclone exited early\n{tail}{hint}",
+                "error": f"rclone exited early\n{tail}{_fail_hints(tail)}",
                 "log": str(log),
             }
         time.sleep(0.5)
 
     if is_mounted(str(path)):
-        return _ok_payload()
+        return _ok_payload(proc)
     tail = log.read_text()[-2000:] if log.exists() else ""
     return {
         "ok": False,
