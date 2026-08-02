@@ -37,8 +37,11 @@ if [[ -z "$PY" ]]; then
   osascript -e 'display alert "CloudMount" message "python3 not found. Install Python 3 or Xcode CLT."'
   exit 1
 fi
-# Run setup quietly then open GUI
-"$PY" "$RES/wasabi/bin/cloudmount" setup >/dev/null 2>&1 || true
+# Run setup (rclone download, migration, SwiftBar wiring) then open GUI.
+# Logged instead of discarded so first-run failures are diagnosable.
+LOGDIR="$HOME/Library/Application Support/YourAmaryllis/CloudMount/logs"
+mkdir -p "$LOGDIR" 2>/dev/null || true
+"$PY" "$RES/wasabi/bin/cloudmount" setup >>"$LOGDIR/setup.log" 2>&1 || true
 exec "$PY" "$RES/wasabi/bin/cloudmount" gui --port 8765
 LAUNCH
 chmod +x "$MACOS/CloudMount"
