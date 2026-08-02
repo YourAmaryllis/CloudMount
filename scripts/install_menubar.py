@@ -8,10 +8,15 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
+# Only the current plugin. plugins/rclone-mounts.10s.sh is a legacy plugin
+# from before the core/state.json data model — it reads the old
+# config/mounts.json via bin/wasabi-status and shows stale/duplicate counts
+# alongside cloudmount.5s.sh. Do not link it.
 PLUGIN_SOURCES = [
     ROOT / "plugins" / "cloudmount.5s.sh",
-    ROOT / "plugins" / "rclone-mounts.10s.sh",
 ]
+LEGACY_PLUGIN_NAME = "rclone-mounts.10s.sh"
+LEGACY_PLUGIN_SRC = ROOT / "plugins" / LEGACY_PLUGIN_NAME
 
 HOST_APPS = {
     "SwiftBar": Path("/Applications/SwiftBar.app"),
@@ -61,6 +66,32 @@ def _enable_plugins(names: list[str]) -> None:
         )
     except Exception:
         pass
+
+
+def cleanup_legacy_plugin() -> dict[str, Any]:
+    """Remove a stale rclone-mounts.10s.sh symlink left by CloudMount <=0.0.4.
+
+    Safe to call every setup() run: idempotent, and only removes a symlink
+    that resolves into this repo/app's own plugins dir.
+    """
+    if sys.platform != "darwin":
+        return {"removed": []}
+    removed: list[str] = []
+    for host_dir in (
+        Path.home() / "Library/Application Support/SwiftBar/Plugins",
+        Path.home() / "Library/Application Support/xbar/plugins",
+    ):
+        link = host_dir / LEGACY_PLUGIN_NAME
+        if not link.is_symlink():
+            continue
+        try:
+            target = link.resolve()
+        except Exception:
+            continue
+        if target == LEGACY_PLUGIN_SRC.resolve():
+            link.unlink()
+            removed.append(str(link))
+    return {"removed": removed}
 
 
 def install() -> dict[str, Any]:

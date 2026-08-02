@@ -133,9 +133,16 @@ def _install_menubar_if_needed() -> dict[str, Any]:
     if platform.system() != "Darwin":
         return {"ok": True, "skipped": True, "reason": "not macOS"}
 
+    try:
+        from scripts.install_menubar import cleanup_legacy_plugin
+
+        cleanup = cleanup_legacy_plugin()
+    except Exception as e:
+        cleanup = {"error": str(e)}
+
     st = state.load()
     if st.get("prefs", {}).get("menubar_install_done"):
-        return {"ok": True, "skipped": True}
+        return {"ok": True, "skipped": True, "cleanup": cleanup}
 
     result: dict[str, Any]
     try:
@@ -144,6 +151,7 @@ def _install_menubar_if_needed() -> dict[str, Any]:
         result = install_menubar()
     except Exception as e:
         result = {"ok": False, "error": str(e)}
+    result["cleanup"] = cleanup
 
     st = state.load()
     st.setdefault("prefs", {})["menubar_install_done"] = True
