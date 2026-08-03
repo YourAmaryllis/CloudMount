@@ -9,17 +9,24 @@ from .paths import APP_SUPPORT, RCLONE_CONF, STATE_PATH, LOG_DIR
 from .rclone_bin import ensure_rclone, rclone_version
 
 
-def status() -> dict[str, Any]:
+def status(light: bool = False) -> dict[str, Any]:
+    """Full status snapshot.
+
+    `light=True` skips per-host Keychain probes (auth_mode/aws_profile/
+    has_secrets) — meant for hot polling paths, like the SwiftBar menu-bar
+    plugin, that only read mounts/summary and never look at `hosts`.
+    """
     migrate.migrate_if_needed()
     caps = capabilities.report()
     mlist = mounts.list_mounts()
-    hlist = hosts.list_hosts()
     up = sum(1 for m in mlist if m.get("mounted"))
-    return {
-        "version": __version__,
-        "capabilities": caps,
-        "prefs": state.load().get("prefs"),
-        "hosts": [
+    if light:
+        hosts_out: list[dict[str, Any]] = []
+        hosts_count = len(hosts.list_hosts())
+    else:
+        hlist = hosts.list_hosts()
+        hosts_count = len(hlist)
+        hosts_out = [
             {
                 "id": h["id"],
                 "name": h.get("name"),
@@ -53,7 +60,12 @@ def status() -> dict[str, Any]:
                 ),
             }
             for h in hlist
-        ],
+        ]
+    return {
+        "version": __version__,
+        "capabilities": caps,
+        "prefs": state.load().get("prefs"),
+        "hosts": hosts_out,
         "mounts": [
             {
                 "id": m["id"],
@@ -68,7 +80,7 @@ def status() -> dict[str, Any]:
             }
             for m in mlist
         ],
-        "summary": {"mounts_total": len(mlist), "mounts_up": up, "hosts": len(hlist)},
+        "summary": {"mounts_total": len(mlist), "mounts_up": up, "hosts": hosts_count},
         "paths": {
             "app_support": str(APP_SUPPORT),
             "state": str(STATE_PATH),
@@ -110,7 +122,7 @@ def setup() -> dict[str, Any]:
         scrub = {**scrub, "s3_options": scrub_s3}
     except Exception as e:
         scrub = {"ok": False, "error": str(e)}
-    caps = capabilities.report()
+    caps = capabilities.report(fresh=True)
     menubar = _install_menubar_if_needed()
     return {
         "ok": True,

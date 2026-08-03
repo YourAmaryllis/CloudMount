@@ -27,7 +27,12 @@ def main(argv: list[str] | None = None) -> int:
         "fix-keychain",
         help="Rewrite Keychain secrets with open ACL (stops repeated password prompts)",
     )
-    sub.add_parser("status", help="JSON status")
+    st_p = sub.add_parser("status", help="JSON status")
+    st_p.add_argument(
+        "--light",
+        action="store_true",
+        help="Skip per-host Keychain probes; for hot polling (e.g. SwiftBar)",
+    )
     sub.add_parser("capabilities", help="Mount backend capabilities")
     s = sub.add_parser("prefs")
     s.add_argument("--enable-fuse", type=lambda x: x.lower() == "true", default=None)
@@ -130,10 +135,10 @@ def main(argv: list[str] | None = None) -> int:
         _j(api.fix_keychain())
         return 0
     if args.cmd == "status":
-        _j(api.status())
+        _j(api.status(light=getattr(args, "light", False)))
         return 0
     if args.cmd == "capabilities":
-        _j(capabilities.report())
+        _j(capabilities.report(fresh=True))
         return 0
     if args.cmd == "prefs":
         kw = {}

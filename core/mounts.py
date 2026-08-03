@@ -33,10 +33,11 @@ from .state import load, new_id, save
 
 def list_mounts() -> list[dict[str, Any]]:
     st = load()
+    mtab = None if is_windows() else _mount_table_text()
     out = []
     for m in st.get("mounts") or []:
         item = dict(m)
-        item["mounted"] = is_mounted(m.get("path") or "")
+        item["mounted"] = is_mounted(m.get("path") or "", _mtab=mtab)
         item["host"] = get_host(m.get("host_id") or "")
         out.append(item)
     return out
@@ -49,18 +50,27 @@ def get_mount(mount_id: str) -> Optional[dict[str, Any]]:
     return None
 
 
-def is_mounted(path: str) -> bool:
+def _mount_table_text() -> str:
+    try:
+        r = subprocess.run(["mount"], capture_output=True, text=True, check=False)
+        return r.stdout or ""
+    except Exception:
+        return ""
+
+
+def is_mounted(path: str, _mtab: Optional[str] = None) -> bool:
+    """Check whether `path` is an active mount point.
+
+    Pass `_mtab` (output of `mount`) when checking several paths at once —
+    e.g. list_mounts() — to avoid spawning `mount` once per path.
+    """
     if not path:
         return False
     p = str(expand_user(path))
     if is_windows():
         return _win_is_mounted(p)
-    try:
-        r = subprocess.run(["mount"], capture_output=True, text=True, check=False)
-        text = r.stdout or ""
-        return f" on {p} " in text or f" on {p}/ " in text
-    except Exception:
-        return False
+    text = _mtab if _mtab is not None else _mount_table_text()
+    return f" on {p} " in text or f" on {p}/ " in text
 
 
 def _win_is_mounted(path: str) -> bool:

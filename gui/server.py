@@ -62,7 +62,7 @@ class Handler(BaseHTTPRequestHandler):
             _json_response(self, 200, api.status())
             return
         if path == "/api/capabilities":
-            _json_response(self, 200, capabilities.report())
+            _json_response(self, 200, capabilities.report(fresh=True))
             return
         if path == "/api/setup":
             _json_response(self, 200, api.setup())

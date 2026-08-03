@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # <xbar.title>CloudMount</xbar.title>
-# <xbar.version>v0.2.1</xbar.version>
+# <xbar.version>v0.2.2</xbar.version>
 # <xbar.author>YourAmaryllis</xbar.author>
 # <xbar.desc>Cloud mounts — open UI, mount/unmount (SwiftBar host)</xbar.desc>
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
@@ -10,6 +10,11 @@
 #
 # Actions use cloudmount-launch (absolute path). SwiftBar params after "|" are
 # SPACE-separated. Launch is detached so GUI survives the menu click.
+#
+# Perf note: this runs every 5s for as long as SwiftBar is open, so it's kept
+# to exactly 2 subprocess spawns — `cloudmount status --light` (skips the
+# per-host Keychain probes the menu doesn't use) and one Python renderer.
+# Do not reintroduce a separate spawn per parsed field.
 
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
@@ -32,31 +37,7 @@ for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
 done
 PY="${PY:-python3}"
 
-status_json="$("$PY" "$CM" status 2>/dev/null || echo '{}')"
-up=$(printf '%s' "$status_json" | "$PY" -c 'import json,sys
-try:
- d=json.load(sys.stdin); print(d.get("summary",{}).get("mounts_up",0))
-except Exception:
- print(0)' 2>/dev/null || echo 0)
-total=$(printf '%s' "$status_json" | "$PY" -c 'import json,sys
-try:
- d=json.load(sys.stdin); print(d.get("summary",{}).get("mounts_total",0))
-except Exception:
- print(0)' 2>/dev/null || echo 0)
-
-if [[ "$total" == "0" ]]; then
-  echo "☁ +"
-else
-  if [[ "$up" == "$total" ]]; then
-    echo "☁ $up"
-  else
-    echo "☁ $up/$total"
-  fi
-fi
-
-echo "---"
-# Absolute bash path + launcher — no bare "python3"
-echo "Open CloudMount… | bash=${LAUNCH} param1=gui terminal=false refresh=true"
+status_json="$("$PY" "$CM" status --light 2>/dev/null || echo '{}')"
 
 printf '%s' "$status_json" | "$PY" -c "
 import json, sys
@@ -65,6 +46,21 @@ try:
     d = json.load(sys.stdin)
 except Exception:
     d = {}
+
+summary = d.get('summary') or {}
+up = summary.get('mounts_up', 0)
+total = summary.get('mounts_total', 0)
+
+if total == 0:
+    print('☁ +')
+elif up == total:
+    print(f'☁ {up}')
+else:
+    print(f'☁ {up}/{total}')
+
+print('---')
+print(f'Open CloudMount… | bash={launch} param1=gui terminal=false refresh=true')
+
 for m in d.get('mounts') or []:
     label = m.get('label') or m.get('id')
     mid = m.get('id')
@@ -78,10 +74,10 @@ for m in d.get('mounts') or []:
         print(f'○ {label} ({kind})')
         print(f'--Mount | bash={launch} param1=mount param2={mid} terminal=false refresh=true')
     print('---')
-" "$LAUNCH"
 
-echo "Mount all | bash=${LAUNCH} param1=mount-all terminal=false refresh=true"
-echo "Unmount all | bash=${LAUNCH} param1=unmount-all terminal=false refresh=true"
-echo "---"
-echo "Run setup | bash=${LAUNCH} param1=setup terminal=false refresh=true"
-echo "Refresh | refresh=true"
+print(f'Mount all | bash={launch} param1=mount-all terminal=false refresh=true')
+print(f'Unmount all | bash={launch} param1=unmount-all terminal=false refresh=true')
+print('---')
+print(f'Run setup | bash={launch} param1=setup terminal=false refresh=true')
+print('Refresh | refresh=true')
+" "$LAUNCH"

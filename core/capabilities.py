@@ -3,7 +3,7 @@ from __future__ import annotations
 import platform
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .rclone_bin import ensure_rclone, rclone_path, run_rclone
 
@@ -112,7 +112,56 @@ def nfs_ready() -> bool:
     return rclone_has_nfsmount()
 
 
-def report() -> dict[str, Any]:
+_CACHE_TTL_SECONDS = 120  # rclone/macFUSE/WinFsp support essentially never
+# changes mid-session, but each caller (e.g. the SwiftBar menu-bar plugin)
+# runs in a fresh short-lived process every few seconds, so an in-memory
+# cache wouldn't survive between calls — hence a small disk cache instead.
+
+
+def _cache_path() -> Path:
+    from .paths import APP_SUPPORT
+
+    return APP_SUPPORT / "capabilities.cache.json"
+
+
+def _read_cache() -> Optional[dict[str, Any]]:
+    import json
+    import time
+
+    try:
+        data = json.loads(_cache_path().read_text())
+        if time.time() - float(data.get("ts", 0)) < _CACHE_TTL_SECONDS:
+            return data.get("report")
+    except Exception:
+        pass
+    return None
+
+
+def _write_cache(data: dict[str, Any]) -> None:
+    import json
+    import time
+
+    try:
+        p = _cache_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"ts": time.time(), "report": data}))
+    except Exception:
+        pass
+
+
+def report(*, fresh: bool = False) -> dict[str, Any]:
+    """Mount-backend capability report.
+
+    Cached to disk for `_CACHE_TTL_SECONDS` — computing it spawns the rclone
+    binary a couple of times, which is wasteful on a hot polling path (e.g.
+    the SwiftBar plugin calling `cloudmount status` every few seconds).
+    Pass `fresh=True` right after installing/removing macFUSE etc.
+    """
+    if not fresh:
+        cached = _read_cache()
+        if cached is not None:
+            return cached
+
     path = rclone_path()
     present = path.is_file()
     try:
@@ -122,22 +171,36 @@ def report() -> dict[str, Any]:
     except Exception:
         pass
     system = platform.system()
-    return {
+    has_fuse = rclone_has_fuse_mount() if present else False
+    has_nfs = rclone_has_nfsmount() if present else False
+    mf = macfuse_installed()
+    wf = winfsp_installed()
+    if system == "Darwin":
+        fuse_ok = has_fuse and mf
+    elif system == "Windows":
+        fuse_ok = has_fuse and wf
+    else:
+        fuse_ok = has_fuse  # Linux: typically FUSE userspace
+    nfs_ok = has_nfs if system != "Windows" else False
+
+    data = {
         "rclone_path": str(rclone_path()),
         "rclone_present": present,
         "platform_system": system,
-        "macfuse_installed": macfuse_installed(),
-        "winfsp_installed": winfsp_installed(),
-        "rclone_has_fuse_mount": rclone_has_fuse_mount() if present else False,
-        "rclone_has_nfsmount": rclone_has_nfsmount() if present else False,
-        "fuse_ready": fuse_ready() if present else False,
-        "nfs_ready": nfs_ready() if present else False,
+        "macfuse_installed": mf,
+        "winfsp_installed": wf,
+        "rclone_has_fuse_mount": has_fuse,
+        "rclone_has_nfsmount": has_nfs,
+        "fuse_ready": fuse_ok,
+        "nfs_ready": nfs_ok,
         "platform": platform.platform(),
         "default_mount_kind": "fuse" if system == "Windows" else "nfs",
         "mount_backend_label": (
             "WinFsp" if system == "Windows" else ("macFUSE" if system == "Darwin" else "FUSE")
         ),
     }
+    _write_cache(data)
+    return data
 
 
 def help_install_macfuse(open_browser: bool = True) -> dict[str, Any]:

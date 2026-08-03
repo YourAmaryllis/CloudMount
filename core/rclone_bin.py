@@ -168,9 +168,47 @@ def run_rclone(
     return subprocess.run(cmd, **kw)
 
 
+def _version_cache_path() -> Path:
+    return LOG_DIR.parent / "rclone-version.cache.json"
+
+
 def rclone_version() -> str:
+    """rclone's own version string, cached to disk keyed by binary mtime.
+
+    Spawning the rclone binary just to print its version is wasteful on a
+    hot polling path (e.g. `cloudmount status` called every few seconds by
+    the SwiftBar plugin). Each poll runs in a fresh short-lived process, so
+    an in-memory cache wouldn't help — hence a small disk cache, keyed on
+    the binary's mtime (rather than a time-based TTL) so an rclone upgrade
+    invalidates it immediately.
+    """
+    import json
+
+    try:
+        p = rclone_path()
+        mtime = p.stat().st_mtime
+    except Exception:
+        mtime = -1.0
+
+    cache_file = _version_cache_path()
+    try:
+        data = json.loads(cache_file.read_text())
+        if data.get("path") == str(rclone_path()) and data.get("mtime") == mtime:
+            return data.get("version", "unknown")
+    except Exception:
+        pass
+
     try:
         r = run_rclone(["version"])
-        return (r.stdout or "").splitlines()[0] if r.stdout else "unknown"
+        val = (r.stdout or "").splitlines()[0] if r.stdout else "unknown"
     except Exception as e:
-        return f"error: {e}"
+        val = f"error: {e}"
+
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps({"path": str(rclone_path()), "mtime": mtime, "version": val})
+        )
+    except Exception:
+        pass
+    return val
