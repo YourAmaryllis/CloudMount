@@ -39,7 +39,8 @@ final class CloudMountModel: ObservableObject {
             await refresh()
         }
         let t = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+            guard let self else { return }
+            Task { @MainActor in await self.refresh() }
         }
         // Let the OS coalesce this wake with other system timers instead of
         // forcing a precise 5s schedule — a bare Timer with zero tolerance
