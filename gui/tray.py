@@ -1,6 +1,8 @@
 """System tray / notification-area host for CloudMount (Windows + optional others).
 
-SwiftBar equivalent: status icon + menu for open UI, mount/unmount, setup, quit.
+macOS uses a native menu-bar app instead (see mac-app/); this is the
+Windows/Linux equivalent: status icon + menu for open UI, mount/unmount,
+setup, quit.
 
 Requires: pip install pystray Pillow
 """

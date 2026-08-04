@@ -59,7 +59,9 @@ class Handler(BaseHTTPRequestHandler):
             self._static(name, ctype)
             return
         if path == "/api/status":
-            _json_response(self, 200, api.status())
+            q = parse_qs(u.query)
+            light = q.get("light", ["0"])[0] not in ("0", "", "false")
+            _json_response(self, 200, api.status(light=light))
             return
         if path == "/api/capabilities":
             _json_response(self, 200, capabilities.report(fresh=True))

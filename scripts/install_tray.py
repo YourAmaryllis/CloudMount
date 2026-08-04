@@ -14,7 +14,7 @@ def install() -> dict[str, Any]:
     if sys.platform != "win32":
         return {
             "ok": False,
-            "error": "install-tray is for Windows. On macOS use install-menubar (SwiftBar).",
+            "error": "install-tray is for Windows. On macOS, build mac-app/ instead.",
         }
 
     startup = Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs\Startup"

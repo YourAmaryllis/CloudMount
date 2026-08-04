@@ -13,8 +13,8 @@ def status(light: bool = False) -> dict[str, Any]:
     """Full status snapshot.
 
     `light=True` skips per-host Keychain probes (auth_mode/aws_profile/
-    has_secrets) — meant for hot polling paths, like the SwiftBar menu-bar
-    plugin, that only read mounts/summary and never look at `hosts`.
+    has_secrets) — meant for hot polling paths, like the menu-bar app,
+    that only read mounts/summary and never look at `hosts`.
     """
     migrate.migrate_if_needed()
     caps = capabilities.report()
@@ -107,7 +107,7 @@ def set_prefs(**kwargs: Any) -> dict[str, Any]:
 
 
 def setup() -> dict[str, Any]:
-    """First-run: rclone binary + migrate + capabilities + menu-bar host."""
+    """First-run: rclone binary + migrate + capabilities."""
     try:
         ensure_rclone()
     except Exception as e:
@@ -123,52 +123,17 @@ def setup() -> dict[str, Any]:
     except Exception as e:
         scrub = {"ok": False, "error": str(e)}
     caps = capabilities.report(fresh=True)
-    menubar = _install_menubar_if_needed()
     return {
         "ok": True,
         "migrate": mig,
         "scrub": scrub,
         "capabilities": caps,
-        "menubar": menubar,
         "rclone_version": rclone_version(),
         "note": (
             "Keychain is only written when you save host credentials. "
             "Mount/Test no longer update Keychain (session tokens use a local file)."
         ),
     }
-
-
-def _install_menubar_if_needed() -> dict[str, Any]:
-    """Best-effort, one-time SwiftBar wiring on macOS (macOS only, non-fatal)."""
-    import platform
-
-    if platform.system() != "Darwin":
-        return {"ok": True, "skipped": True, "reason": "not macOS"}
-
-    try:
-        from scripts.install_menubar import cleanup_legacy_plugin
-
-        cleanup = cleanup_legacy_plugin()
-    except Exception as e:
-        cleanup = {"error": str(e)}
-
-    st = state.load()
-    if st.get("prefs", {}).get("menubar_install_done"):
-        return {"ok": True, "skipped": True, "cleanup": cleanup}
-
-    result: dict[str, Any]
-    try:
-        from scripts.install_menubar import install as install_menubar
-
-        result = install_menubar()
-    except Exception as e:
-        result = {"ok": False, "error": str(e)}
-    result["cleanup"] = cleanup
-
-    st = state.load()
-    st.setdefault("prefs", {})["menubar_install_done"] = True
-    state.save(st)
-    return result
 
 
 def fix_keychain() -> dict[str, Any]:

@@ -111,7 +111,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     tr.add_argument("--port", type=int, default=8765)
 
-    sub.add_parser("install-menubar", help="Install SwiftBar plugin (macOS)")
     sub.add_parser(
         "install-tray",
         help="Install Windows Startup shortcut for the system tray icon",
@@ -227,11 +226,6 @@ def main(argv: list[str] | None = None) -> int:
         from gui.tray import run_tray
 
         run_tray(port=getattr(args, "port", 8765) or 8765)
-        return 0
-    if args.cmd == "install-menubar":
-        from scripts.install_menubar import install
-
-        _j(install())
         return 0
     if args.cmd == "install-tray":
         from scripts.install_tray import install as install_tray

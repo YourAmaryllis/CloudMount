@@ -1,6 +1,6 @@
 # CloudMount on Windows
 
-Same app as macOS: hosts, mounts, local web UI, plus a **system tray** icon (notification area) like SwiftBar on Mac.
+Same app as macOS: hosts, mounts, local web UI, plus a **system tray** icon (notification area) like the native menu bar app on Mac.
 
 ## Requirements
 

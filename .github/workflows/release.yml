@@ -56,7 +56,7 @@ jobs:
         run: echo "${{ needs.resolve-version.outputs.version }}" > VERSION
       - name: Build DMG
         run: |
-          chmod +x scripts/*.sh bin/* plugins/*.sh 2>/dev/null || true
+          chmod +x scripts/*.sh bin/* 2>/dev/null || true
           ./scripts/build-dmg.sh
       - uses: actions/upload-artifact@v4
         with:
@@ -127,24 +127,26 @@ jobs:
 
             | File | Platform |
             |------|----------|
-            | `CloudMount-${{ needs.resolve-version.outputs.version }}.dmg` | **macOS** (Apple Silicon & Intel) |
+            | `CloudMount-${{ needs.resolve-version.outputs.version }}.dmg` | **macOS 14+** (Apple Silicon & Intel, universal binary) |
             | `CloudMount-${{ needs.resolve-version.outputs.version }}-windows-setup.exe` | **Windows** installer |
             | `CloudMount-${{ needs.resolve-version.outputs.version }}-windows.zip` | **Windows** portable zip |
 
             ### macOS install
-            1. Open the DMG → drag **CloudMount** to Applications  
-            2. Right-click → **Open** if Gatekeeper warns (unsigned)  
-            3. rclone downloads on first setup  
+            1. Open the DMG → drag **CloudMount** to Applications
+            2. Right-click → **Open** if Gatekeeper warns (unsigned)
+            3. CloudMount runs from the **menu bar** — no window opens; look for the cloud icon. Click it to mount/unmount, or "Configure Hosts & Mounts…" for settings
+            4. rclone downloads on first setup
 
             ### Windows install
-            1. Run the **setup.exe** (or extract the zip)  
-            2. Install [**Python 3**](https://www.python.org/downloads/) (Add to PATH) if needed  
-            3. Install [**WinFsp**](https://winfsp.dev/rel/) (required for mounts)  
-            4. Run **First-Run Setup** (or from Start Menu) → tray icon appears  
-            5. Full notes: [docs/WINDOWS.md](https://github.com/${{ github.repository }}/blob/main/docs/WINDOWS.md)  
+            1. Run the **setup.exe** (or extract the zip)
+            2. Install [**Python 3**](https://www.python.org/downloads/) (Add to PATH) if needed
+            3. Install [**WinFsp**](https://winfsp.dev/rel/) (required for mounts)
+            4. Run **First-Run Setup** (or from Start Menu) → tray icon appears
+            5. Full notes: [docs/WINDOWS.md](https://github.com/${{ github.repository }}/blob/main/docs/WINDOWS.md)
 
             ### Notes
-            - Tested remotes: **Wasabi (S3)** and **Proton Drive**  
+            - Tested remotes: **Wasabi (S3)** and **Proton Drive**
             - Builds are **unsigned**
+            - macOS menu bar is now a native app (replaces the old SwiftBar-plugin approach) — requires macOS 14 Sonoma or later
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

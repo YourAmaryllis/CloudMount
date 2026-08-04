@@ -12,6 +12,10 @@ __pycache__/
 *.pyc
 .DS_Store
 
+# Swift package build output (mac-app/)
+.build/
+.swiftpm/
+
 # Local overrides
 config/mounts.local.yaml
 .env

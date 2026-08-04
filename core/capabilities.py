@@ -113,9 +113,9 @@ def nfs_ready() -> bool:
 
 
 _CACHE_TTL_SECONDS = 120  # rclone/macFUSE/WinFsp support essentially never
-# changes mid-session, but each caller (e.g. the SwiftBar menu-bar plugin)
-# runs in a fresh short-lived process every few seconds, so an in-memory
-# cache wouldn't survive between calls — hence a small disk cache instead.
+# changes mid-session, but CLI invocations (e.g. `cloudmount status`) are a
+# fresh short-lived process every call, so an in-memory cache wouldn't
+# survive between calls — hence a small disk cache instead.
 
 
 def _cache_path() -> Path:
@@ -154,7 +154,7 @@ def report(*, fresh: bool = False) -> dict[str, Any]:
 
     Cached to disk for `_CACHE_TTL_SECONDS` — computing it spawns the rclone
     binary a couple of times, which is wasteful on a hot polling path (e.g.
-    the SwiftBar plugin calling `cloudmount status` every few seconds).
+    the menu-bar app calling `cloudmount status` every few seconds).
     Pass `fresh=True` right after installing/removing macFUSE etc.
     """
     if not fresh:

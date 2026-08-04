@@ -176,10 +176,10 @@ def rclone_version() -> str:
     """rclone's own version string, cached to disk keyed by binary mtime.
 
     Spawning the rclone binary just to print its version is wasteful on a
-    hot polling path (e.g. `cloudmount status` called every few seconds by
-    the SwiftBar plugin). Each poll runs in a fresh short-lived process, so
-    an in-memory cache wouldn't help — hence a small disk cache, keyed on
-    the binary's mtime (rather than a time-based TTL) so an rclone upgrade
+    hot polling path (e.g. `cloudmount status` called every few seconds).
+    CLI invocations run in a fresh short-lived process each time, so an
+    in-memory cache wouldn't help — hence a small disk cache, keyed on the
+    binary's mtime (rather than a time-based TTL) so an rclone upgrade
     invalidates it immediately.
     """
     import json
