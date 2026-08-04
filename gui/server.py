@@ -199,6 +199,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/macfuse/brew":
                 _json_response(self, 200, capabilities.try_brew_install_macfuse())
                 return
+            if path == "/api/quit":
+                # Mounts run detached (start_new_session=True) and are
+                # unaffected — this only stops the API/GUI server.
+                _json_response(self, 200, {"ok": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             _json_response(self, 404, {"ok": False, "error": "not found"})
         except Exception as e:
             _json_response(self, 400, {"ok": False, "error": str(e)})

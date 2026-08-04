@@ -64,6 +64,19 @@ case "$cmd" in
     # Also open UI so user sees result
     exec "$0" gui
     ;;
+  quit)
+    port="${1:-8765}"
+    # Mounts are detached from the server process (start_new_session=True on
+    # start) so this only stops the API/GUI server — active mounts survive.
+    if curl -fsS -X POST "http://127.0.0.1:${port}/api/quit" >/dev/null 2>&1; then
+      echo "[$(ts)] quit: requested via HTTP" >>"$LOG"
+    else
+      echo "[$(ts)] quit: HTTP unreachable, falling back to pkill" >>"$LOG"
+      pkill -f "cloudmount serve" 2>/dev/null || true
+    fi
+    /usr/bin/osascript -e "display notification \"CloudMount stopped (mounts still active)\" with title \"CloudMount\"" 2>/dev/null || true
+    exit 0
+    ;;
   mount|unmount|mount-all|unmount-all)
     out="$("$PY" "$CM" "$cmd" "$@" 2>&1)" || true
     echo "[$(ts)] $cmd $*: $out" >>"$LOG"

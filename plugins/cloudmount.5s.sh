@@ -80,4 +80,6 @@ print(f'Unmount all | bash={launch} param1=unmount-all terminal=false refresh=tr
 print('---')
 print(f'Run setup | bash={launch} param1=setup terminal=false refresh=true')
 print('Refresh | refresh=true')
+print('---')
+print(f'Quit CloudMount | bash={launch} param1=quit terminal=false refresh=true')
 " "$LAUNCH"
