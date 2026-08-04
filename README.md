@@ -14,11 +14,11 @@ Any rclone backend can be configured in the UI. **Tested so far:** Wasabi (S3 st
 - **S3:** static access keys **or** AWS shared **profile** (`~/.aws`) for SSO / IAM user keys / Roles Anywhere via `credential_process`  
 - Secrets in **Keychain** (macOS) or **Credential Manager** (Windows); profile mode uses the AWS CLI credential chain  
 - Official rclone binary downloaded on first setup  
-- macOS DMG + Windows installer from [Releases](https://github.com/arthurtsang/CloudMount/releases)
+- macOS DMG + Windows installer from [Releases](https://github.com/YourAmaryllis/CloudMount/releases)
 
 ## Install
 
-Download from [Releases](https://github.com/arthurtsang/CloudMount/releases):
+Download from [Releases](https://github.com/YourAmaryllis/CloudMount/releases):
 
 | Asset | Platform |
 |-------|----------|

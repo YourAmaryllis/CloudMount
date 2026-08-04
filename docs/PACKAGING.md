@@ -2,7 +2,7 @@
 
 ## User install (recommended)
 
-1. Download `CloudMount-x.y.z.dmg` from [Releases](https://github.com/arthurtsang/CloudMount/releases)  
+1. Download `CloudMount-x.y.z.dmg` from [Releases](https://github.com/YourAmaryllis/CloudMount/releases)  
 2. Drag **CloudMount.app** to **Applications**  
 3. Open the app (right-click → **Open** if Gatekeeper warns — builds are unsigned for now)  
 4. Setup: rclone is downloaded if needed; check FUSE / NFS capabilities  
