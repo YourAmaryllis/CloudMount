@@ -29,7 +29,7 @@ Download from [Releases](https://github.com/YourAmaryllis/CloudMount/releases):
 ### macOS
 
 1. Open the DMG → drag **CloudMount** to Applications  
-2. First launch: **right-click → Open** if Gatekeeper warns (unsigned)  
+2. Check the release notes for that version: if it's signed & notarized with a Developer ID certificate, Gatekeeper opens it with no warning; if not, right-click → Open on first launch  
 3. rclone downloads on first setup  
 
 ### Windows
@@ -130,6 +130,28 @@ Or **Actions → Release → Run workflow**.
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml)
 
 Version source: [`VERSION`](VERSION).
+
+### Signing & notarization
+
+CI signs and notarizes the macOS DMG automatically once these repo secrets
+are set (Settings → Secrets and variables → Actions); with none of them
+set, it falls back to an ad-hoc-signed, unsigned build exactly as before.
+Windows builds are unaffected either way.
+
+- `MACOS_CERTIFICATE_P12` / `MACOS_CERTIFICATE_PASSWORD` — a Developer ID
+  Application certificate exported as `.p12`, base64-encoded
+  (`base64 -i DeveloperID.p12 | pbcopy`)
+- Notarization credentials — either an App Store Connect API key
+  (`APPLE_API_KEY_ID` / `APPLE_API_ISSUER` / `APPLE_API_KEY_P8`, base64 of
+  the downloaded `.p8`) or an Apple ID app-specific password
+  (`APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD`, generated
+  at [appleid.apple.com](https://appleid.apple.com))
+
+To test locally instead of through CI:
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build-dmg.sh
+NOTARY_KEYCHAIN_PROFILE=<profile> ./scripts/notarize-dmg.sh dist/CloudMount-*.dmg
+```
 
 ## Docs
 

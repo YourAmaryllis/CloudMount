@@ -50,14 +50,81 @@ jobs:
     name: macOS DMG
     needs: resolve-version
     runs-on: macos-14
+    env:
+      # Job-level env so `if:` conditions below can check `env.*` — step
+      # `if:` conditions can't reference `secrets.*` directly.
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+    outputs:
+      signed: ${{ steps.sign-status.outputs.signed }}
+      notarized: ${{ steps.sign-status.outputs.notarized }}
     steps:
       - uses: actions/checkout@v4
       - name: Set VERSION
         run: echo "${{ needs.resolve-version.outputs.version }}" > VERSION
+
+      # Only runs when MACOS_CERTIFICATE_P12 is configured (repo secrets ->
+      # Settings -> Secrets and variables -> Actions). Without it, the build
+      # falls back to ad-hoc signing, same as before.
+      - name: Import Developer ID certificate
+        if: ${{ env.MACOS_CERTIFICATE_P12 != '' }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security list-keychain -d user -s build.keychain login.keychain
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          IDENTITY="$(security find-identity -v -p codesigning build.keychain \
+            | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)"/\1/')"
+          if [[ -z "$IDENTITY" ]]; then
+            echo "::error::No Developer ID Application identity found in the imported certificate" >&2
+            exit 1
+          fi
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
       - name: Build DMG
         run: |
           chmod +x scripts/*.sh bin/* 2>/dev/null || true
           ./scripts/build-dmg.sh
+
+      - name: Notarize DMG
+        if: ${{ env.MACOS_CERTIFICATE_P12 != '' }}
+        run: |
+          if ./scripts/notarize-dmg.sh "$(cat dist/dmg-path.txt)" | tee /tmp/notarize.log; then
+            grep -q "^Notarized & stapled:" /tmp/notarize.log && echo "NOTARIZED=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Record signed status
+        id: sign-status
+        run: |
+          if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "${NOTARIZED:-}" == "true" ]]; then
+            echo "notarized=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarized=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain build.keychain || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
@@ -133,7 +200,7 @@ jobs:
 
             ### macOS install
             1. Open the DMG → drag **CloudMount** to Applications
-            2. Right-click → **Open** if Gatekeeper warns (unsigned)
+            2. ${{ needs.macos-dmg.outputs.notarized == 'true' && 'Signed and notarized with a Developer ID certificate — Gatekeeper should open it with no warning' || (needs.macos-dmg.outputs.signed == 'true' && 'Signed with a Developer ID certificate but not yet notarized — right-click → **Open** if Gatekeeper still warns' || 'Right-click → **Open** if Gatekeeper warns (unsigned)') }}
             3. CloudMount runs from the **menu bar** — no window opens; look for the cloud icon. Click it to mount/unmount, or "Configure Hosts & Mounts…" for settings
             4. rclone downloads on first setup
 
@@ -146,7 +213,7 @@ jobs:
 
             ### Notes
             - Tested remotes: **Wasabi (S3)** and **Proton Drive**
-            - Builds are **unsigned**
+            - macOS build: ${{ needs.macos-dmg.outputs.notarized == 'true' && 'signed & notarized' || (needs.macos-dmg.outputs.signed == 'true' && 'signed with a Developer ID certificate (not notarized yet)' || '**unsigned**') }}; Windows build is unsigned
             - macOS menu bar is now a native app (replaces the old SwiftBar-plugin approach) — requires macOS 14 Sonoma or later
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

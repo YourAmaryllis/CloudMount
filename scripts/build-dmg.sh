@@ -43,4 +43,9 @@ fi
 echo "$DMG" >"$DIST/dmg-path.txt"
 ls -lh "$DMG"
 echo "DMG: $DMG"
-echo "Note: not signed/notarized — right-click Open on first launch if Gatekeeper blocks."
+
+if codesign -dv "$APP" 2>&1 | grep -q "Authority=Developer ID Application"; then
+  echo "Signed with a Developer ID certificate. Run scripts/notarize-dmg.sh \"$DMG\" to notarize."
+else
+  echo "Note: not signed/notarized — right-click Open on first launch if Gatekeeper blocks."
+fi

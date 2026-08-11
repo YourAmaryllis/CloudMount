@@ -62,10 +62,22 @@ cat >"$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc sign: LSUIElement / MenuBarExtra need a real bundle identity to
-# behave reliably (same reason mac-app/Scripts/build-app.sh signs its own
-# standalone test build). No Developer ID yet, so this is local-only.
-codesign --force --deep --sign - "$APP"
+# LSUIElement / MenuBarExtra need a real bundle identity to behave reliably
+# (same reason mac-app/Scripts/build-app.sh signs its own standalone test
+# build), so this always signs at least ad-hoc. Set CODESIGN_IDENTITY (e.g.
+# "Developer ID Application: Your Name (TEAMID)" — see `security
+# find-identity -v -p codesigning`) to sign for real distribution instead;
+# see the "Signing & notarization" section in the README. rclone is
+# downloaded at runtime (not baked into the bundle), so there's no nested
+# vendored binary here to sign separately, unlike lit's mac-app.
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+  echo "Signing with: $CODESIGN_IDENTITY"
+  codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP"
+  codesign --verify --deep --strict --verbose=2 "$APP"
+else
+  echo "No CODESIGN_IDENTITY set — ad-hoc signing only (local dev / unsigned distribution)."
+  codesign --force --deep --sign - "$APP"
+fi
 
 # Do NOT bake rclone into the app by default — first run downloads into
 # ~/Library/Application Support/YourAmaryllis/CloudMount/bin/<platform>/
