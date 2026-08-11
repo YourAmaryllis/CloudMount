@@ -4,6 +4,8 @@ Mount cloud storage with **rclone** — add hosts, pick folders, mount locally, 
 
 **License:** [MIT](LICENSE) · **Platforms:** macOS and Windows
 
+**[youramaryllis.github.io/CloudMount](https://youramaryllis.github.io/CloudMount/)**
+
 Any rclone backend can be configured in the UI. **Tested so far:** Wasabi (S3 static keys), **AWS S3 (profile / SSO)**, and Proton Drive. Other types are untested.
 
 ## Features
@@ -130,6 +132,10 @@ Or **Actions → Release → Run workflow**.
 Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml)
 
 Version source: [`VERSION`](VERSION).
+
+The [marketing site](https://youramaryllis.github.io/CloudMount/) (`site/`,
+Next.js static export) deploys separately on push via
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml).
 
 ### Signing & notarization
 
