@@ -31,7 +31,43 @@ else
   exit 0
 fi
 
-echo "Submitting $DMG for notarization (this can take a while — first-time submissions on a new Developer ID can take 30+ minutes)..."
-xcrun notarytool submit "$DMG" "${AUTH[@]}" --wait
+echo "Submitting $DMG for notarization..."
+SUBMIT_OUT="$(xcrun notarytool submit "$DMG" "${AUTH[@]}" --no-wait 2>&1)"
+echo "$SUBMIT_OUT"
+SUBMISSION_ID="$(echo "$SUBMIT_OUT" | grep -m1 '^  id:' | awk '{print $2}')"
+if [[ -z "$SUBMISSION_ID" ]]; then
+  echo "Could not parse a submission ID from notarytool's output — aborting." >&2
+  exit 1
+fi
+
+# `notarytool wait` polls Apple until the submission reaches a terminal
+# state. A first-time submission on a new Developer ID can sit "In
+# Progress" for 30-60+ minutes, and a single transient network blip on the
+# runner during that window kills `submit --wait` outright with no retry
+# of its own — so poll it here instead: submission IDs are Apple-side and
+# outlive our local connection, so re-invoking `wait` just resumes polling
+# the same submission, cheaply. Only bail immediately on a genuine
+# rejection (status: Invalid), not on a transient error.
+ATTEMPTS=0
+MAX_ATTEMPTS=10
+while true; do
+  if WAIT_OUT="$(xcrun notarytool wait "$SUBMISSION_ID" "${AUTH[@]}" 2>&1)"; then
+    echo "$WAIT_OUT"
+    break
+  fi
+  echo "$WAIT_OUT"
+  if echo "$WAIT_OUT" | grep -q "status: Invalid"; then
+    echo "Notarization rejected (Invalid) — not retrying. Run 'xcrun notarytool log $SUBMISSION_ID' for details." >&2
+    exit 1
+  fi
+  ATTEMPTS=$((ATTEMPTS + 1))
+  if (( ATTEMPTS >= MAX_ATTEMPTS )); then
+    echo "Gave up after $ATTEMPTS retries waiting on submission $SUBMISSION_ID." >&2
+    exit 1
+  fi
+  echo "Transient error waiting on submission $SUBMISSION_ID (attempt $ATTEMPTS/$MAX_ATTEMPTS) — retrying in 30s..." >&2
+  sleep 30
+done
+
 xcrun stapler staple "$DMG"
 echo "Notarized & stapled: $DMG"
